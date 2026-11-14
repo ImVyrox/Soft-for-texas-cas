@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+native/tcm-link/tcm-link
+*.part
+.idea/
+.vscode/
+graphify-out/
