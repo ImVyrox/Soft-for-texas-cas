@@ -51,13 +51,29 @@ Marcas: **[H]** comprobado en las muestras · **[P]** hipótesis.
 | `1widgetNode` + `<wdgt type="Image">` | **[H]** imagen incrustada. `<name>` = nombre de la entrada BMP del contenedor (así se relaciona la página con el recurso); también tamaño, recorte, escala y una ruta de Windows del equipo donde se creó |
 | Expresiones matemáticas | **[P]** el texto de la entrada aparece como `0text` (en la muestra, `4`); no hay muestras con fracciones, potencias o plantillas |
 
+## Párrafos (Fase 5)
+
+- **[H]** Pulsar Intro en una nota crea un `1para` nuevo: en la muestra, «π» Intro «n» da dos párrafos.
+- **[H]** En los documentos guardados por la calculadora (OS 4.5.5), la entrada de formato 0 lleva
+  `entryRefCnt="2147483647"`, un valor centinela que no cuenta referencias. En `potenciales.tns`
+  (software de TI 6.3) lleva `4`, y entonces sí cuenta.
+- **Párrafo «de texto»:** solo contiene líneas `1rtline` con fragmentos `1word` de `np="1"` e
+  `id0="0"`, sin hijos y con `pp0` correcto. El resto son párrafos «con objetos» (matemáticas,
+  imágenes, cursor u otros formatos).
+- **Operación segura (verificada en hardware):** crear, eliminar, reordenar y reescribir párrafos de
+  texto con el formato 0, solo cuando su contador es el centinela, porque así ningún contador
+  cambia. Los párrafos con objetos se conservan byte a byte y en su orden.
+- **Salvaguarda de escapado:** solo se reescribe una página si escapar de nuevo su texto reproduce
+  exactamente los bytes de TI.
+
 ## Qué se puede modificar sin corromper el documento
 
 - **Comprobado en hardware:** el texto de fragmentos `1word` ya existentes, con `np="1"`, sin
   elementos hijos, actualizando `pp0`. Incluye `ñ` y vocales con tilde
   ([HARDWARE-NATIVE-TESTS.md](HARDWARE-NATIVE-TESTS.md)).
+- **Comprobado en hardware (Fase 5):** crear, eliminar, reordenar y reescribir párrafos de texto.
 - **No habilitado** (sin pruebas que lo respalden):
-  - añadir o quitar fragmentos o párrafos;
+  - añadir fragmentos dentro de párrafos con objetos;
   - cambiar formatos;
   - fragmentos con varios tramos de formato;
   - caracteres fuera del conjunto permitido (`< > & "`, otros alfabetos);

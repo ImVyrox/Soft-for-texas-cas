@@ -125,3 +125,30 @@ def test_apply_edits_scripts_and_notes_together():
     pages2 = [p for p in notes.document_pages(out) if p.problem == "Problem2.xml"]
     assert pages2[1].runs[1].text == "z"
     assert container.parse(data).entry("Document.xml") == out.entry("Document.xml")
+
+
+@pytest.mark.skipif(not SAMPLES, reason="set TCM_SAMPLES to a folder of real .tns files")
+def test_real_notes_paragraph_insert_and_page_order():
+    from texas_cas_manager.tns import pages
+    from texas_cas_manager.tns.edit import apply_edits
+    checked = 0
+    for f in sorted(Path(SAMPLES).glob("*.tns")):
+        data = f.read_bytes()
+        doc = container.parse(data)
+        for name in notes.problem_names(doc):
+            xml = xmldoc.decode_entry(doc.entry(name))[1]
+            for page in notes.problem_pages(name, xml):
+                if not page.is_notes or not notes.structure_allowed(xml, page.card)[0]:
+                    continue
+                n = len(notes.page_paragraphs(xml, page.card))
+                new = apply_edits(data, layouts={(name, page.card): list(range(n)) + ["TCM"]})
+                paras = notes.page_paragraphs(xmldoc.decode_entry(container.parse(new).entry(name))[1], page.card)
+                assert [p.text for p in paras][-1] == "TCM" and len(paras) == n + 1, f
+                checked += 1
+            n_cards = len(pages.problem_summaries(xml))
+            if n_cards > 1:
+                order = list(range(n_cards))[::-1]
+                new = apply_edits(data, orders={name: order})
+                assert [s.widget for s in pages.problem_summaries(xmldoc.decode_entry(
+                    container.parse(new).entry(name))[1])] == [pages.problem_summaries(xml)[i].widget for i in order]
+    assert checked

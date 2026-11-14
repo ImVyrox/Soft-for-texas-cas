@@ -20,6 +20,17 @@ Leyenda: ✅ hecho (prueba automática) · 🔩 hecho y probado en hardware · �
 | Lua | Formatear: solo se aplica si `luac5.1 -s` produce el mismo bytecode; respeta la sangría del script | ✅ |
 | Lua | Buscar y reemplazar con regex (grupos `\1`) y palabra completa | ✅ |
 
+## Hecho en la Fase 5
+
+| Área | Función | Estado |
+|---|---|---|
+| Notas | Crear, eliminar, reordenar y editar párrafos de texto | 🔩 |
+| Páginas | Reordenar páginas | 🔩 |
+| Matemáticas | Lectura en forma lineal, resultado, error, plantillas desconocidas | ✅ (solo lectura) |
+| Otras páginas | Resúmenes de Calculadora, Gráficos/Geometría, Listas, Datos; variables del problema | ✅ (solo lectura) |
+| TIXC | Más de 256 nombres de etiqueta (forma literal) | ✅ (comprobado con el CRC de TI) |
+| Interfaz | Vista de página por párrafos; Deshacer/Rehacer de ediciones de páginas | ✅ |
+
 ## Lua en TI-Nspire: estándar frente a TI
 
 Fuente: [TI-Nspire Lua Scripting API Reference Guide](https://education.ti.com/html/webhelp/EG_TINspireLUA/EN/content/eg_splash_page/splash_luaapiguide.htm).
@@ -36,9 +47,10 @@ Fuente: [TI-Nspire Lua Scripting API Reference Guide](https://education.ti.com/h
 
 | Función | Por qué no está |
 |---|---|
-| Editar cuadros matemáticos | El resultado va en caché en `<out>`; editar la entrada sin recalcularlo lo desincronizaría. 🔍 |
-| Añadir o quitar texto y párrafos en notas | Faltan muestras y pruebas en hardware de nodos nuevos. 🔍 |
-| Páginas de calculadora, gráficos, geometría y listas | Sin muestras. 🔍 |
+| Editar cuadros matemáticos | El resultado va en caché en `<out>`; falta probar en hardware si TI lo recalcula con `<out>` vacío. 🔍 |
+| Duplicar, eliminar o crear páginas | Dependencias por variables (`f1`, `datos`) y `sc:guid` (ver [PAGE-STRUCTURE.md](PAGE-STRUCTURE.md)). 🔍 |
+| Editar Calculadora, Gráficos, Listas | Los resultados también se guardan en caché; requieren el motor de TI. 🔍 |
+| Párrafos en documentos del software de TI 6.3 | El formato 0 cuenta referencias: habría que actualizar los contadores. 🔍 |
 | Vista previa renderizada de la página | Requiere interpretar formatos y fuentes de TI. ⬜ |
 | Autocompletado completo de la API de TI | Hay que transcribir la guía con cuidado. ⬜ |
 | Plegado de tablas y comentarios largos | Solo se pliegan bloques de código. ⬜ |

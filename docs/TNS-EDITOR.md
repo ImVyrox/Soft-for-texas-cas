@@ -18,6 +18,21 @@
 6. **Guardar como.** El resultado se escribe en un archivo nuevo, de forma atómica. Guardar sobre
    el original está prohibido.
 
+## Páginas y párrafos (Fase 5)
+
+- En «Páginas» aparecen todas las páginas, de cualquier aplicación (Notas, Lua, Calculadora,
+  Gráficos y geometría, Listas, Datos).
+- Las páginas que no son de notas se muestran como resumen de solo lectura: entradas y resultados de
+  Calculadora, objetos, columnas y fórmulas, tipo de gráfico.
+- En las páginas de notas, la tabla tiene una fila por párrafo. Los párrafos de texto se editan con
+  doble clic y se pueden insertar (＋), eliminar (－) y mover (▲▼). Los párrafos con objetos muestran
+  como filas hijas su texto (editable) y sus cuadros matemáticos (forma lineal y resultado, solo
+  lectura).
+- «◀ Página / Página ▶» cambia el orden de las páginas.
+- **Deshacer / Rehacer** de la barra actúa sobre el script si está a la vista y, si no, sobre las
+  ediciones de páginas.
+- La vista previa de cambios muestra los párrafos antes y después, y el nuevo orden de páginas.
+
 ## Notas (Fase 4)
 
 En el explorador aparece la sección «Páginas». Cada página se marca como **editable**, **solo

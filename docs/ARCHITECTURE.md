@@ -16,7 +16,9 @@ src/texas_cas_manager/
 │   ├── images.py       BMP de 16 bits de TI
 │   ├── _luna_data.py   constantes de Luna 2.1 (MPL)
 │   ├── lua.py          crear documentos Lua, leer y sustituir scripts (Luna y nativos)
-│   ├── notes.py        páginas de notas: lectura y edición acotada de texto
+│   ├── notes.py        páginas de notas: fragmentos y párrafos (lectura y edición acotada)
+│   ├── mathbox.py      cuadros matemáticos: forma lineal, resultado, plantillas (solo lectura)
+│   ├── pages.py        tipos de página (resúmenes), variables, reordenación de páginas
 │   ├── xmlentry.py     reescritura de una entrada XML nativa (misma cabecera TIEN)
 │   ├── inspect.py      análisis, informes y validación
 │   ├── edit.py         reconstrucción verificada y comparación por niveles
@@ -27,7 +29,7 @@ src/texas_cas_manager/
     ├── theme.py        temas claro/oscuro (tokens → hoja de estilo Qt)
     ├── workers.py      tareas en segundo plano, LinkService (detección y cola USB)
     ├── pages/          inicio, calculadora, archivos locales, editor, herramientas, ajustes
-    └── widgets/        editor de código Lua, buscar/reemplazar, tarjetas, notificaciones, iconos
+    └── widgets/        editor de código Lua, vista de páginas, buscar/reemplazar, tarjetas, notificaciones, iconos
 native/tcm-link/        helper USB en C (libticalcs2)
 ```
 
