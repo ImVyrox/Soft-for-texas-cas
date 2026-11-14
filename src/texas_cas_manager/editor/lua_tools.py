@@ -189,8 +189,25 @@ def _depth_changes(line: str) -> tuple[int, int]:
     return -lowest, depth
 
 
-def format_lua(source: str, unit: str = "  ") -> str:
+def detect_indent_unit(source: str) -> str:
+    """The script's own indentation unit: a tab, or the most common step between indented lines."""
+    lines = [ln for ln in source.split("\n") if ln.strip()]
+    if sum(ln.startswith("\t") for ln in lines) > sum(ln.startswith(" ") for ln in lines):
+        return "\t"
+    steps: dict[int, int] = {}
+    prev = 0
+    for ln in lines:
+        width = len(ln) - len(ln.lstrip(" "))
+        if width > prev:
+            steps[width - prev] = steps.get(width - prev, 0) + 1
+        prev = width
+    best = max(steps, key=steps.get) if steps else 2
+    return " " * (best if best in (2, 3, 4, 8) else 2)
+
+
+def format_lua(source: str, unit: str | None = None) -> str:
     """Re-indent code lines by block depth; lines inside long comments/strings are kept as they are."""
+    unit = unit or detect_indent_unit(source)
     protected = set()
     for m in _TOKEN_RE.finditer(source):
         if m.lastgroup == "long" or (m.lastgroup == "comment" and m.group("comment").startswith("--[")):

@@ -34,9 +34,10 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 | Validar, comparar y guardar como versión nueva | ✅ |
 | Abrir en la calculadora un documento generado | 🟡 |
 | Leer el XML de documentos guardados por la calculadora | ✅ (Fase 3: cabecera TIEN0100 y TIXC) |
-| Editar el script Lua de documentos nativos | 🧪 validado en el programa, sin probar en la calculadora |
+| Editar el script Lua de documentos nativos | ✅ probado en la calculadora (Fase 4) |
+| Editar el texto de páginas de notas | ✅ probado en la calculadora (Fase 4) |
 | Explorador interno, visor XML/imágenes, pestañas, buscar/reemplazar, autocompletado | ✅ |
-| Editar notas (`TI.Notepad`) y páginas matemáticas | ⬜ |
+| Editar cuadros matemáticos y otras páginas | 🔍 ver [EDITOR-ROADMAP.md](EDITOR-ROADMAP.md) |
 | Documentos Python (CX II) | ⬜ |
 | Añadir imágenes a documentos Lua | ⬜ (Luna sube la versión a `0700`) |
 

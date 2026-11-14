@@ -16,10 +16,12 @@ src/texas_cas_manager/
 │   ├── images.py       BMP de 16 bits de TI
 │   ├── _luna_data.py   constantes de Luna 2.1 (MPL)
 │   ├── lua.py          crear documentos Lua, leer y sustituir scripts (Luna y nativos)
+│   ├── notes.py        páginas de notas: lectura y edición acotada de texto
+│   ├── xmlentry.py     reescritura de una entrada XML nativa (misma cabecera TIEN)
 │   ├── inspect.py      análisis, informes y validación
 │   ├── edit.py         reconstrucción verificada y comparación por niveles
 │   └── extract.py      exportación de componentes
-├── editor/lua_tools.py autocompletado, indentación, sintaxis con luac5.1 (sin Qt)
+├── editor/lua_tools.py autocompletado, indentación, sintaxis, plegado, funciones, formato seguro, avisos TI (sin Qt)
 └── ui/
     ├── main_window.py  barra superior, navegación lateral, páginas, barra de estado
     ├── theme.py        temas claro/oscuro (tokens → hoja de estilo Qt)

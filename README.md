@@ -34,10 +34,11 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 - ✅ Reconstrucción validada, comparación con el original y guardado como versión nueva. El
   original nunca se modifica.
 - ✅ Documentos **guardados por la propia calculadora**: se descifran y se muestran (propiedades,
-  páginas, XML, imágenes, scripts). 🧪 Su script Lua se puede editar y reconstruir, aunque todavía no
-  se ha probado el resultado en la calculadora ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)).
-- ✅ Editor con pestañas, explorador interno, buscar/reemplazar, autocompletado, indentación y
-  comprobación de sintaxis con `luac5.1` si está instalado.
+  páginas, XML, imágenes, scripts). Su script Lua y el texto de sus páginas de notas se pueden
+  editar; ambas cosas están probadas en la calculadora ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)).
+- ✅ Editor con pestañas, explorador de páginas, historial, buscar/reemplazar (regex), autocompletado,
+  navegación de funciones, plegado, formato seguro y comprobación de sintaxis con `luac5.1` si está
+  instalado.
 - ✅ Gestor de archivos locales: abrir, duplicar, renombrar, papelera, importar, exportar recursos.
 - ✅ Tema claro y oscuro, notificaciones y modo demostración sin USB.
 
@@ -79,7 +80,8 @@ Dependencias de Python: `PySide6` y `pycryptodome` (para el cifrado 3DES de los 
 - [Formato .tns](docs/TNS-FORMAT.md) · [Ingeniería inversa](docs/TNS-REVERSE-ENGINEERING.md) ·
   [Editor](docs/TNS-EDITOR.md) · [Compatibilidad](docs/COMPATIBILITY.md)
 - [Desarrollo y pruebas](docs/DEVELOPMENT.md)
-- [Pruebas con hardware real](docs/HARDWARE-TESTS.md)
+- [Pruebas con hardware real](docs/HARDWARE-TESTS.md) · [Documentos nativos en hardware](docs/HARDWARE-NATIVE-TESTS.md)
+- [Formato de notas](docs/NOTES-FORMAT.md) · [Hoja de ruta del editor](docs/EDITOR-ROADMAP.md)
 
 ## Licencia
 

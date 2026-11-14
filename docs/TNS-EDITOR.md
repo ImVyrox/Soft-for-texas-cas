@@ -18,6 +18,17 @@
 6. **Guardar como.** El resultado se escribe en un archivo nuevo, de forma atómica. Guardar sobre
    el original está prohibido.
 
+## Notas (Fase 4)
+
+En el explorador aparece la sección «Páginas». Cada página se marca como **editable**, **solo
+lectura**, **desconocido** o **protegido**. Al elegir una página de notas se muestra una tabla con
+sus elementos (texto, cuadros matemáticos e imágenes).
+
+Con doble clic se edita el texto de los fragmentos marcados como editables. Solo se aceptan letras
+(incluidas á é í ó ú ü ñ), números, espacios, `π` y puntuación básica. Los cuadros matemáticos son de
+solo lectura. Detalles en [NOTES-FORMAT.md](NOTES-FORMAT.md). Verificado en hardware
+([HARDWARE-NATIVE-TESTS.md](HARDWARE-NATIVE-TESTS.md)).
+
 ## Interfaz
 
 - **Pestañas:** un documento por pestaña; `*` en el título indica cambios sin guardar. Al cerrar
@@ -25,11 +36,14 @@
 - **Panel izquierdo (Explorador):** Scripts, XML, Recursos y Secciones binarias.
 - **Panel central:** editor Lua, visor XML (un elemento por línea, solo lectura), visor de
   imágenes, información y primeros bytes de cada sección.
-- **Panel derecho (Propiedades):** informe del documento o de la sección elegida: codificación,
-  tamaños, cabecera TIEN, semilla, convención de metadatos y SHA-256.
-- **Barra de acciones:** Nuevo Lua, Abrir, Importar .lua, Guardar como, Extraer, Reconstruir,
-  Validar, Comparar (con el original o con otro `.tns`) y Enviar a la calculadora. Las acciones no
-  disponibles quedan deshabilitadas y su descripción explica por qué.
+- **Panel derecho:**
+  - **Propiedades:** informe del documento o de la sección elegida (codificación, tamaños, cabecera
+    TIEN, semilla, convención de metadatos y SHA-256).
+  - **Historial:** registro de lo hecho en el documento (abrir, editar, formatear, validar,
+    reconstruir, guardar, extraer).
+- **Barra de acciones:** Nuevo (documento Lua vacío o desde un `.lua`), Abrir, Guardar como,
+  Extraer, Reconstruir, Validar, Formatear, Comparar (vista previa de cambios o con otro `.tns`) y
+  Enviar. Las acciones no disponibles quedan deshabilitadas y su descripción explica por qué.
 
 ## Editor Lua
 
@@ -40,7 +54,12 @@
 | Indentación automática | Intro mantiene la sangría y añade un nivel tras `then`, `do`, `else`, `repeat`, `function(...)`, `{` y `(` |
 | Buscar / reemplazar | Ctrl+F / Ctrl+H; «Todo» se deshace en un solo paso |
 | Deshacer / rehacer | Ctrl+Z / Ctrl+Shift+Z |
-| Errores de sintaxis | `luac5.1 -p` al validar (Lua 5.1, como TI-Nspire); si no está instalado se avisa y no se finge la comprobación |
+| Errores de sintaxis | `luac5.1 -p` al validar y también mientras se escribe (tras una pausa de 1,2 s); marca la línea con error. Si `luac5.1` no está instalado se avisa, en vez de fingir la comprobación |
+| APIs no disponibles | Aviso con marca en el margen para `io`, `os`, `debug`, `file`, `dofile`, `loadfile` y `module` (no existen en TI-Nspire) |
+| Navegación | Lista de funciones del script; al elegir una se salta a su línea |
+| Plegado | Clic en ▾/▸ del margen para plegar o desplegar `function`/`do`/`then`/`repeat` … `end`/`until` |
+| Formatear | Reindenta con la sangría del propio script; solo se aplica si `luac5.1 -s` da el mismo bytecode antes y después |
+| Búsqueda avanzada | Opciones de regex (con grupos `\1` en el reemplazo) y palabra completa |
 
 ## Comparación
 

@@ -60,8 +60,14 @@ def test_block_regions_and_functions():
     assert lua_tools.functions("obj.draw = function(gc) end\nfunction a:b() end") == [("obj.draw", 1), ("a:b", 2)]
 
 
+def test_detect_indent_unit():
+    assert lua_tools.detect_indent_unit("if a then\n    b()\n    if c then\n        d()\n    end\nend") == "    "
+    assert lua_tools.detect_indent_unit("if a then\n\tb()\nend") == "\t"
+    assert lua_tools.detect_indent_unit("x = 1") == "  "
+
+
 def test_format_indents_and_keeps_long_strings():
-    out = lua_tools.format_lua(MESSY).splitlines()
+    out = lua_tools.format_lua(MESSY, "  ").splitlines()
     assert out[1] == "  if x > 1 then" and out[2] == '    return "a"' and out[3] == "  elseif x < 0 then"
     assert out[5] == "  else" and out[7] == "  end" and out[13] == "  return x" and out[14] == "end"
     assert "  keep this" in out  # inside a long string: untouched
