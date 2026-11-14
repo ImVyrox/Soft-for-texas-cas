@@ -34,6 +34,8 @@ _ICONS = {
     "build": ("run-build", QStyle.SP_MediaPlay),
     "connect": ("network-connect", QStyle.SP_DriveNetIcon),
     "info": ("dialog-information", QStyle.SP_MessageBoxInformation),
+    "edit-undo": ("edit-undo", QStyle.SP_ArrowBack),
+    "edit-redo": ("edit-redo", QStyle.SP_ArrowForward),
 }
 
 

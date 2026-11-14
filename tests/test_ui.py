@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from PySide6.QtCore import Qt
+
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -170,12 +172,11 @@ def section(tab, prefix):
 
 def test_notes_pages_edit_status_and_history(window, qapp_wait, tmp_path):
     import sys
-    from PySide6.QtCore import Qt
     sys.path.insert(0, str(Path(__file__).parent))
-    from native_fixture import notes_document
+    from native_fixture import MATH_BOX, notes_document, word
     from texas_cas_manager.tns import notes
     src = tmp_path / "notas.tns"
-    original = notes_document()
+    original = notes_document([[word("uno"), word("abc") + MATH_BOX + word(""), word("tres")], [word("x")]])
     src.write_bytes(original)
     window.open_document(str(src))
     ed = window.editor
@@ -184,22 +185,71 @@ def test_notes_pages_edit_status_and_history(window, qapp_wait, tmp_path):
     pages = section(tab, "Páginas")
     assert pages.childCount() == 2 and pages.child(0).text(0).endswith("[editable]")
     tab.tree.setCurrentItem(pages.child(0))
-    t = tab.page_table
-    assert tab.stack.currentWidget() is t
-    rows = [(t.item(r, 0).text(), t.item(r, 1).text(), t.item(r, 2).text()) for r in range(t.rowCount())]
-    assert rows[0] == ("Texto", "hola", "editable")
-    assert "cuadro matemático" in t.item(2, 2).toolTip()
-    assert ("Matemáticas", "2+3  →  5") in [r[:2] for r in rows]
-    assert bool(t.item(0, 1).flags() & Qt.ItemIsEditable) and not t.item(2, 1).flags() & Qt.ItemIsEditable
-    t.item(0, 1).setText("adiós ñ")
-    assert tab.dirty and tab.changed_notes() == {("Problem1.xml", 0): {0: "adiós ñ"}}
-    t.item(1, 1).setText("a<b")  # rejected and reverted
-    assert t.item(1, 1).text() == "abc"
+    view, t = tab.page_view, tab.page_table
+    assert tab.stack.currentWidget() is view
+
+    def rows():
+        return [(t.item(r, 0).text(), t.item(r, 1).text(), t.item(r, 2).text()) for r in range(t.rowCount())]
+    assert rows() == [("Párrafo", "uno", "editable"), ("Párrafo con objetos", "", "solo lectura"),
+                      ("   ↳ Texto", "abc", "editable"), ("   ↳ Matemáticas", "2+3  →  5", "solo lectura"),
+                      ("Párrafo", "tres", "editable")]
+    assert "caché" in t.item(3, 2).toolTip()
+    # edit a run inside the complex paragraph, and a whole text paragraph
+    t.item(2, 1).setText("ABC ñ")
+    t.item(0, 1).setText("UNO")
+    t.item(4, 1).setText("a<b")  # rejected and restored
+    assert t.item(4, 1).text() == "tres"
+    # structural: insert after "tres", move it up, delete it
+    t.selectRow(4)
+    assert view.btn_insert.isEnabled() and view.btn_delete.isEnabled()
+    view.btn_insert.click()
+    assert [r[1] for r in rows()][-1] == "" and t.rowCount() == 6
+    t.item(5, 1).setText("nuevo")
+    t.selectRow(1)  # complex paragraph: cannot be deleted
+    assert not view.btn_delete.isEnabled() and "objetos" in view.btn_delete.toolTip()
+    assert view.btn_delete.accessibleName() == "Eliminar párrafo"
+    t.selectRow(5)
+    view.btn_up.click()
+    assert [r[1] for r in rows() if r[0] == "Párrafo"] == ["UNO", "nuevo", "tres"]
+    # undo / redo through the editor toolbar
+    ed.undo()
+    assert [r[1] for r in rows() if r[0] == "Párrafo"] == ["UNO", "tres", "nuevo"]
+    ed.redo()
+    assert [r[1] for r in rows() if r[0] == "Párrafo"] == ["UNO", "nuevo", "tres"]
+    # move the page
+    view.btn_page_down.click()
+    assert tab.state.orders == {"Problem1.xml": [1, 0]} and "→ 2" in pages.child(0).text(0)
+    assert tab.dirty
     data = tab.build()
-    assert [r.text for r in notes.document_pages(container.parse(data))[0].runs][:2] == ["adiós ñ", "abc"]
+    out = notes.document_pages(container.parse(data))
+    assert [r.text for r in out[0].runs] == ["x"]  # pages swapped
+    assert [r.text for r in out[1].runs][:5] == ["UNO", "ABC ñ", "", "nuevo", "tres"] and out[1].math[0].input == "2+3"
     assert src.read_bytes() == original
     history = [tab.history.item(i).text() for i in range(tab.history.count())]
-    assert any("Abierto" in h for h in history) and any("Texto editado" in h for h in history)
+    assert any("Párrafo insertado" in h for h in history) and any("Deshecho" in h for h in history)
+
+
+def test_other_page_types_are_read_only(window, qapp_wait, tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from native_fixture import multi_page_xml, encrypted_entry, DOCUMENT_XML
+    data = container.write(container.TnsDocument("0601", [encrypted_entry("Document.xml", DOCUMENT_XML),
+                                                          encrypted_entry("Problem1.xml", multi_page_xml())]))
+    src = tmp_path / "paginas.tns"
+    src.write_bytes(data)
+    window.open_document(str(src))
+    ed = window.editor
+    assert qapp_wait(lambda: ed.tab is not None and ed.tab.report is not None)
+    tab = ed.tab
+    pages = section(tab, "Páginas")
+    labels = [pages.child(i).text(0) for i in range(pages.childCount())]
+    assert labels[1].startswith("Pág. 2 · Calculadora") and labels[1].endswith("[solo lectura]")
+    tab.tree.setCurrentItem(pages.child(1))
+    t = tab.page_table
+    assert (t.item(0, 0).text(), t.item(0, 1).text()) == ("Entrada", "2+3  →  5")
+    assert not t.item(0, 1).flags() & Qt.ItemIsEditable
+    assert not tab.page_view.btn_insert.isEnabled() and "notas" in tab.page_view.btn_insert.toolTip()
+    assert "f1(x)=x^2" in tab.props.toPlainText()
 
 
 def test_function_navigation_and_folding(window):

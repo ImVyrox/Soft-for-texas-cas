@@ -13,19 +13,20 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-                               QHeaderView, QLabel, QListWidget, QMenu, QPlainTextEdit, QScrollArea, QSplitter,
-                               QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolBar,
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+                               QLabel, QListWidget, QMenu, QPlainTextEdit, QScrollArea, QSplitter,
+                               QStackedWidget, QTabWidget, QTextBrowser, QToolBar,
                                QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...config import atomic_write, unique_path
 from ...editor import lua_tools
-from ...tns import container, images, inspect, notes
+from ...tns import container, images, inspect, notes, pages, xmldoc
 from ...tns.edit import RebuildError, apply_edits, compare_documents, rebuild, text_diff
 from ...tns.extract import export_resources
 from ..widgets.code_editor import CodeEditor
 from ..widgets.common import Card, confirm, human_size, icon, label
 from ..widgets.find_bar import FindBar
+from ..widgets.page_view import PageState, PageView
 from ..workers import run_task
 
 NEW_SCRIPT = """-- Nuevo script Lua para TI-Nspire (OS 3.0.2 o posterior)
@@ -127,7 +128,9 @@ class DocumentTab(QWidget):
         self.current: tuple[str, int] | None = None
         self.last_saved: Path | None = None
         self.pages: list[notes.NotesPage] = []
-        self.note_edits: dict[tuple[str, int], dict[int, str]] = {}
+        self.problem_xml: dict[str, bytes] = {}
+        self.summaries: dict[str, list] = {}
+        self.state = PageState()
         self.current_page: tuple[str, int] | None = None
 
         lay = QHBoxLayout(self)
@@ -165,12 +168,9 @@ class DocumentTab(QWidget):
         cpl.addWidget(self.lint)
         self._lint_timer = QTimer(self, singleShot=True, interval=1200)
         self._lint_timer.timeout.connect(self._lint)
-        self.page_table = QTableWidget(0, 3)
-        self.page_table.setHorizontalHeaderLabels(["Elemento", "Contenido", "Estado"])
-        self.page_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.page_table.verticalHeader().setVisible(False)
-        self.page_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.page_table.itemChanged.connect(self._note_changed)
+        self.page_view = PageView()
+        self.page_view.edited.connect(self._page_edited)
+        self.page_view.rejected.connect(lambda msg: self.message.emit("error", msg))
         self.xml_view = CodeEditor(theme=theme_name, lua=False)
         self.xml_view.setReadOnly(True)
         self.info = QTextBrowser()
@@ -178,7 +178,7 @@ class DocumentTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidget(self.image)
         scroll.setWidgetResizable(True)
-        for w in (self.code_page, self.xml_view, self.info, scroll, self.page_table):
+        for w in (self.code_page, self.xml_view, self.info, scroll, self.page_view):
             self.stack.addWidget(w)
         self.image_page = scroll
         self.find_bar = FindBar()
@@ -210,8 +210,21 @@ class DocumentTab(QWidget):
         return name + (" *" if self.dirty else "")
 
     @property
+    def page_table(self):
+        return self.page_view.table
+
+    @property
+    def note_edits(self) -> dict:
+        return self.state.note_edits
+
+    @note_edits.setter
+    def note_edits(self, value: dict) -> None:
+        self.state.note_edits = value
+
+    @property
     def dirty(self) -> bool:
-        return any(self.edits.get(k, v) != v for k, v in self.originals.items()) or bool(self.changed_notes())
+        return (any(self.edits.get(k, v) != v for k, v in self.originals.items()) or bool(self.changed_notes())
+                or bool(self.state.layouts) or bool(self.state.orders))
 
     def changed_notes(self) -> dict[tuple[str, int], dict[int, str]]:
         out = {}
@@ -307,16 +320,24 @@ class DocumentTab(QWidget):
         def work(p):
             data = self.path.read_bytes()
             rep = inspect.analyze(data)
+            doc = container.parse(data)
             try:
-                pages = notes.document_pages(container.parse(data))
+                note_pages = notes.document_pages(doc)
             except ValueError:  # a protected problem: pages stay unknown
-                pages = []
-            return data, rep, pages
+                note_pages = []
+            xmls, summaries = {}, {}
+            for name in notes.problem_names(doc):
+                try:
+                    xmls[name] = xmldoc.decode_entry(doc.entry(name))[1]
+                    summaries[name] = pages.problem_summaries(xmls[name])
+                except ValueError:
+                    continue
+            return data, rep, note_pages, xmls, summaries
 
         run_task(work, self._loaded, failed)
 
     def _loaded(self, result) -> None:
-        self.original, self.report, self.pages = result
+        self.original, self.report, self.pages, self.problem_xml, self.summaries = result
         self.doc = container.parse(self.original)
         self.log(f"Abierto {self.path.name} ({rep_short(self.report)})")
         rep = self.report
@@ -349,24 +370,33 @@ class DocumentTab(QWidget):
             it.setIcon(0, icon("editor"))
             it.setData(0, ROLE, ("script", (s.problem, s.index)))
             scripts.append(it)
-        pages = []
+        pages_items = []
         protected_problems = {e.name for e in rep.entries if e.kind == "XML" and not e.readable}
-        for k, page in enumerate(self.pages, 1):
-            it = QTreeWidgetItem([f"Pág. {k} · {WIDGET_NAMES.get(page.widget, page.widget.replace('TI.', ''))}"])
-            it.setData(0, ROLE, ("page", (page.problem, page.card)))
-            if not page.readable:
-                _mark(it, "unknown", page.error)
-            elif page.is_notes and any(r.editable for r in page.runs):
-                _mark(it, "editable", "Texto de notas editable")
-            elif page.widget == "TI.ScriptApp":
-                _mark(it, "readonly", "El script se edita en «Scripts»")
-            else:
-                _mark(it, "readonly", "Sin contenido editable en esta página")
-            pages.append(it)
+        by_key = {(p.problem, p.card): p for p in self.pages}
+        for problem, summaries in self.summaries.items():
+            for summary in summaries:
+                key = (problem, summary.card)
+                note_page = by_key.get(key)
+                it = QTreeWidgetItem([self._page_label(key, summary)])
+                it.setData(0, ROLE, ("page", key))
+                if note_page is not None and not note_page.readable:
+                    _mark(it, "unknown", note_page.error)
+                elif note_page is not None and note_page.is_notes and (
+                        any(r.editable for r in note_page.runs) or notes.structure_allowed(
+                            self.problem_xml[problem], summary.card)[0]):
+                    _mark(it, "editable", "Texto y párrafos de notas")
+                elif summary.widget == "TI.ScriptApp":
+                    _mark(it, "readonly", "El script se edita en «Scripts»")
+                elif not summary.understood:
+                    _mark(it, "unknown", f"Tipo de página no reconocido: {summary.widget}")
+                else:
+                    _mark(it, "readonly", f"{summary.app}: solo lectura")
+                pages_items.append(it)
         for name in sorted(protected_problems):
             it = QTreeWidgetItem([name])
             _mark(it, "protected", "No se puede descifrar")
-            pages.append(it)
+            pages_items.append(it)
+        pages = pages_items
         section("Páginas", pages, "Sin páginas")
         for it in scripts:
             key = it.data(0, ROLE)[1]
@@ -476,71 +506,73 @@ class DocumentTab(QWidget):
 
     # -- pages -----------------------------------------------------------------------
 
+    def _page_label(self, key: tuple[str, int], summary) -> str:
+        problem, card = key
+        order = self.state.orders.get(problem)
+        moved = f" → {order.index(card) + 1}" if order and order.index(card) != card else ""
+        name = WIDGET_NAMES.get(summary.widget, summary.app if summary.understood else summary.widget)
+        prefix = f"{problem.removesuffix('.xml')} · " if len(self.summaries) > 1 else ""
+        return f"{prefix}Pág. {card + 1}{moved} · {name}"
+
+    def refresh_page_labels(self) -> None:
+        root = next((self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())
+                     if self.tree.topLevelItem(i).text(0).startswith("Páginas")), None)
+        if root is None:
+            return
+        for i in range(root.childCount()):
+            it = root.child(i)
+            data = it.data(0, ROLE)
+            if data and data[0] == "page":
+                problem, card = data[1]
+                status = it.text(0).rsplit("  [", 1)
+                label = self._page_label(data[1], self.summaries[problem][card])
+                it.setText(0, label + (f"  [{status[1]}" if len(status) == 2 else ""))
+
     def _show_page(self, key: tuple[str, int]) -> None:
-        page = next(p for p in self.pages if (p.problem, p.card) == key)
-        self.current_page = None  # filling the table is not an edit
-        t = self.page_table
-        t.blockSignals(True)
-        t.setRowCount(0)
-        edits = self.note_edits.get(key, {})
-
-        def add(kind: str, content: str, status: str, why: str = "", run: int | None = None) -> None:
-            r = t.rowCount()
-            t.insertRow(r)
-            label, colour = STATUS[status]
-            for c, text in enumerate((kind, content, label)):
-                item = QTableWidgetItem(text)
-                if why:
-                    item.setToolTip(why)
-                flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-                if c == 1 and status == "editable":
-                    flags |= Qt.ItemIsEditable
-                    item.setData(Qt.UserRole, run)
-                item.setFlags(flags)
-                if c == 2:
-                    item.setForeground(QBrush(QColor(colour)))
-                t.setItem(r, c, item)
-
-        for run in page.runs:
-            if run.text or run.editable:
-                add("Texto", edits.get(run.index, run.text), "editable" if run.editable else "readonly",
-                    "" if run.editable else run.reason, run.index)
-        for m in page.math:
-            add("Matemáticas", f"{m.input}  →  {m.output}" if m.output else m.input or "(vacío)", "readonly",
-                "cuadro matemático (no editable todavía)")
-        for img in page.images:
-            add("Imagen", img, "readonly", "recurso del documento")
-        if not page.is_notes:
-            add(page.widget, "Contenido de este tipo de página", "readonly" if page.readable else "unknown",
-                "sin editor para este widget")
-        t.blockSignals(False)
-        header = t.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        problem, card = key
+        page = next((p for p in self.pages if (p.problem, p.card) == key), None)
+        summary = self.summaries[problem][card]
         self.current_page = key
-        self.stack.setCurrentWidget(t)
-        self.props.setHtml(f"<h3>Página {page.card + 1} de {html.escape(page.problem)}</h3>"
-                           f"<p>Widget: {html.escape(page.widget)}<br>Párrafos: {page.paragraphs}<br>"
-                           f"Fragmentos de texto: {len(page.runs)} ({sum(r.editable for r in page.runs)} editables)"
-                           f"<br>Cuadros matemáticos: {len(page.math)}<br>Imágenes: {len(page.images)}</p>"
-                           "<p>Doble clic en un texto editable para cambiarlo. Solo se permiten letras (incluidas "
-                           "á é í ó ú ü ñ), números, espacios, π y puntuación básica.</p>")
+        self.page_view.show_page(self.state, key, self.problem_xml[problem], page, summary,
+                                 len(self.summaries[problem]))
+        self.stack.setCurrentWidget(self.page_view)
+        variables = pages.problem_variables(self.problem_xml[problem])
+        extra = ""
+        if page is not None and page.is_notes:
+            extra = (f"Párrafos: {page.paragraphs}<br>Fragmentos de texto: {len(page.runs)} "
+                     f"({sum(r.editable for r in page.runs)} editables)<br>Cuadros matemáticos: {len(page.math)}"
+                     f"<br>Imágenes: {len(page.images)}")
+        self.props.setHtml(
+            f"<h3>Página {card + 1} de {html.escape(problem)}</h3><p>Aplicación: {html.escape(summary.app)}"
+            f"<br>Widget: {html.escape(summary.widget)}<br>{extra}</p>"
+            + ("<p><b>Variables del problema</b> (compartidas por sus páginas): "
+               + ", ".join(html.escape(f"{n}({p})={v}" if p else f"{n}={v}") for n, p, v in variables) + "</p>"
+               if variables else "")
+            + "<p>Doble clic en un texto editable para cambiarlo. Letras (incluidas á é í ó ú ü ñ), números, "
+              "espacios, π y puntuación básica. Los párrafos con objetos y los cuadros matemáticos se conservan.</p>")
 
-    def _note_changed(self, item: QTableWidgetItem) -> None:
-        if self.current_page is None or item.column() != 1 or item.data(Qt.UserRole) is None:
-            return
-        run, text = item.data(Qt.UserRole), item.text()
-        page = next(p for p in self.pages if (p.problem, p.card) == self.current_page)
-        if not text or not notes.ALLOWED.match(text):
-            self.message.emit("error", "Texto no permitido en notas: usa letras, números, espacios, π y puntuación "
-                                       "básica (sin < > & \").")
-            self.page_table.blockSignals(True)
-            item.setText(self.note_edits.get(self.current_page, {}).get(run, page.runs[run].text))
-            self.page_table.blockSignals(False)
-            return
-        self.note_edits.setdefault(self.current_page, {})[run] = text
-        self.log(f"Texto editado: página {page.card + 1}, fragmento {run + 1}")
+    def _page_edited(self, text: str) -> None:
+        self.log(text)
+        self.refresh_page_labels()
+        self.changed.emit()
+
+    def undo_pages(self) -> bool:
+        if not self.state.undo():
+            return False
+        self._after_state_change("Deshecho")
+        return True
+
+    def redo_pages(self) -> bool:
+        if not self.state.redo():
+            return False
+        self._after_state_change("Rehecho")
+        return True
+
+    def _after_state_change(self, text: str) -> None:
+        if self.current_page is not None and self.stack.currentWidget() is self.page_view:
+            self._show_page(self.current_page)
+        self.refresh_page_labels()
+        self.log(text)
         self.changed.emit()
 
     # -- build ---------------------------------------------------------------------
@@ -550,7 +582,7 @@ class DocumentTab(QWidget):
         if self.is_new:
             return rebuild(None, self.edits[("Problem1.xml", 0)])
         scripts = {k: v for k, v in self.edits.items() if v != self.originals.get(k)}
-        return apply_edits(self.original, scripts, self.changed_notes())
+        return apply_edits(self.original, scripts, self.changed_notes(), self.state.layouts, self.state.orders)
 
 
 class EditorPage(QWidget):
@@ -582,6 +614,8 @@ class EditorPage(QWidget):
         tb.addWidget(new_btn)
         tb.addAction(icon("open"), "Abrir…", self.choose_file)
         tb.addSeparator()
+        self.act_undo = tb.addAction(icon("edit-undo"), "Deshacer", self.undo)
+        self.act_redo = tb.addAction(icon("edit-redo"), "Rehacer", self.redo)
         self.act_save = tb.addAction(icon("save"), "Guardar como…", self.save_new_version)
         self.act_extract = tb.addAction(icon("export"), "Extraer…", self.extract)
         self.act_rebuild = tb.addAction(icon("build"), "Reconstruir", self.rebuild_and_report)
@@ -661,7 +695,7 @@ class EditorPage(QWidget):
         for i in range(self.tabs.count()):
             t = self.tabs.widget(i)
             t.edits = dict(t.originals)
-            t.note_edits = {}
+            t.state.clear()
 
     def _rebuild(self) -> bytes | None:
         try:
@@ -719,7 +753,39 @@ class EditorPage(QWidget):
         self.cmp_btn.setToolTip("" if saved else "Abre un documento .tns guardado")
         self._update_format_action()
 
+    def _on_script(self) -> bool:
+        t = self.tab
+        return t is not None and t.current is not None and t.stack.currentWidget() is t.code_page
+
+    def undo(self) -> None:
+        if self._on_script():
+            self.tab.code.undo()
+        elif self.tab:
+            self.tab.undo_pages()
+        self._update_actions()
+
+    def redo(self) -> None:
+        if self._on_script():
+            self.tab.code.redo()
+        elif self.tab:
+            self.tab.redo_pages()
+        self._update_actions()
+
+    def _update_undo_actions(self) -> None:
+        t = self.tab
+        if t is None:
+            can_undo = can_redo = False
+        elif self._on_script():
+            can_undo, can_redo = t.code.document().isUndoAvailable(), t.code.document().isRedoAvailable()
+        else:
+            can_undo, can_redo = bool(t.state.undo_stack), bool(t.state.redo_stack)
+        self.act_undo.setEnabled(can_undo)
+        self.act_redo.setEnabled(can_redo)
+        self.act_undo.setToolTip("Deshace el último cambio del script o de las páginas" if can_undo else "Nada que deshacer")
+        self.act_redo.setToolTip("" if can_redo else "Nada que rehacer")
+
     def _update_format_action(self) -> None:
+        self._update_undo_actions()
         t = self.tab
         if not self.luac:
             ok, why = False, "Formatear necesita luac5.1 para comprobar que el código no cambia"
@@ -837,6 +903,14 @@ class EditorPage(QWidget):
                 new = tab.edits.get(key, old)
                 if new != old:
                     diffs.append((f"Script {key[0]} #{key[1] + 1}", text_diff(old, new)))
+            for (problem, card), layout in tab.state.layouts.items():
+                paras = notes.page_paragraphs(tab.problem_xml[problem], card)
+                old = "\n".join(p.text if p.kind == "text" else "[párrafo con objetos]" for p in paras) + "\n"
+                new = "\n".join(x if isinstance(x, str) else (paras[x].text if paras[x].kind == "text"
+                                                             else "[párrafo con objetos]") for x in layout) + "\n"
+                diffs.append((f"Párrafos {problem} pág. {card + 1}", text_diff(old, new)))
+            for problem, order in tab.state.orders.items():
+                diffs.append((f"Orden de páginas {problem}", "Nuevo orden: " + ", ".join(str(i + 1) for i in order)))
             for (problem, card), runs in tab.changed_notes().items():
                 page = next(p for p in tab.pages if (p.problem, p.card) == (problem, card))
                 lines = [f"- {page.runs[i].text}\n+ {t}" for i, t in sorted(runs.items())]
