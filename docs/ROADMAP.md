@@ -33,7 +33,10 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 | Editar el script Lua de documentos Luna o creados aquí | ✅ |
 | Validar, comparar y guardar como versión nueva | ✅ |
 | Abrir en la calculadora un documento generado | 🟡 |
-| Leer el XML de documentos guardados por la calculadora | 🔍 clave de cifrado no documentada |
+| Leer el XML de documentos guardados por la calculadora | ✅ (Fase 3: cabecera TIEN0100 y TIXC) |
+| Editar el script Lua de documentos nativos | 🧪 validado en el programa, sin probar en la calculadora |
+| Explorador interno, visor XML/imágenes, pestañas, buscar/reemplazar, autocompletado | ✅ |
+| Editar notas (`TI.Notepad`) y páginas matemáticas | ⬜ |
 | Documentos Python (CX II) | ⬜ |
 | Añadir imágenes a documentos Lua | ⬜ (Luna sube la versión a `0700`) |
 
@@ -52,5 +55,5 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 
 1. Probar `rmdir` con hardware (requiere autorización).
 2. Investigar si la calculadora puede entregar el documento que tiene abierto.
-3. Comprobar en la calculadora un documento Lua generado por el programa.
-4. Buscar documentación sobre la derivación de claves de las cabeceras cifradas.
+3. Comprobar en la calculadora un documento Lua generado y un nativo editado (requiere autorización).
+4. Analizar una copia de `P2.tns` y documentos Python cuando haya muestras.

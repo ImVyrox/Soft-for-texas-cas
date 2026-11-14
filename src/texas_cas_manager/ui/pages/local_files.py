@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 
 import shutil
 from pathlib import Path
@@ -16,20 +15,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFileSystemModel,
 from ...config import unique_path
 from ...tns import inspect
 from ...tns.extract import export_resources
+from .editor import report_html
 from ..widgets.common import Card, confirm, human_size, icon, label
 from ..workers import run_task
-
-
-def report_html(path: Path, rep) -> str:
-    items = "".join(
-        f"<li><b>{html.escape(e.name)}</b><br><span>{e.kind} · {e.method_name} · {human_size(e.stored_size)}"
-        f" · {html.escape(e.status)}</span></li>" for e in rep.entries)
-    problems = "".join(f"<li>{html.escape(p)}</li>" for p in rep.problems) or "<li>Ninguno</li>"
-    return (f"<h3>{html.escape(path.name)}</h3><p>Formato <b>*TIMLP{rep.version}</b> · {human_size(rep.size)} · "
-            f"{len(rep.entries)} componentes</p><p>{html.escape(rep.lua_status)}</p>"
-            f"<p><b>Componentes</b></p><ul>{items}</ul>"
-            f"<p>Reescritura idéntica del contenedor: <b>{'sí' if rep.roundtrip_identical else 'no'}</b></p>"
-            f"<p><b>Problemas</b></p><ul>{problems}</ul>")
 
 
 class LocalFilesPage(QWidget):
@@ -124,7 +112,7 @@ class LocalFilesPage(QWidget):
 
         def done(rep):
             if self.view.currentIndex() == idx:
-                self.info.setHtml(report_html(path, rep))
+                self.info.setHtml(report_html(path.name, rep))
 
         run_task(lambda p: inspect.analyze(path.read_bytes()), done,
                  lambda err: self.info.setHtml(f"<h3>{path.name}</h3><p>No es un documento válido: {err}</p>"))

@@ -1,6 +1,7 @@
 """GUI smoke tests in demo mode (offscreen, no USB)."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +19,7 @@ def window(tmp_path, monkeypatch, qapp_wait):
     win = MainWindow(Settings(workspace=str(tmp_path / "ws"), demo_mode=True))
     win.show()
     yield win
-    win.editor.original_script = win.editor.code.toPlainText()  # no unsaved-changes prompt
+    win.editor.discard_changes()  # no unsaved-changes prompt
     win.service.shutdown()
     win.close()
 
@@ -89,3 +90,73 @@ def test_busy_listing_is_retried_and_reported(window, qapp_wait):
     window.calc.refresh()
     assert qapp_wait(lambda: calls["n"] >= 2 and window.calc._busy_attempts == 0)
     assert window.calc.remote.topLevelItemCount() == 2
+
+
+def test_editor_tabs_native_document_explorer_and_safe_save(window, qapp_wait, tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from native_fixture import SCRIPT, native_document
+    src = tmp_path / "nativo.tns"
+    original = native_document()
+    src.write_bytes(original)
+    window.open_document(str(src))
+    ed = window.editor
+    assert qapp_wait(lambda: ed.tab is not None and ed.tab.report is not None)
+    tab = ed.tab
+    roots = {tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())}
+    assert roots == {"Scripts (1)", "XML (2)", "Recursos (1)", "Secciones binarias (3)"}
+    assert tab.code.toPlainText() == SCRIPT and not tab.code.isReadOnly()
+    # XML viewer shows the decoded XML; resources are listed
+    xml_root = next(tab.tree.topLevelItem(i) for i in range(4) if tab.tree.topLevelItem(i).text(0).startswith("XML"))
+    tab.tree.setCurrentItem(xml_root.child(0))
+    assert "<doc ver=" in tab.xml_view.toPlainText() and tab.stack.currentWidget() is tab.xml_view
+    # edit the script, rebuild, save as new file: original untouched
+    tab.tree.setCurrentItem(tab.tree.topLevelItem(0).child(0))
+    tab.code.setPlainText("-- nuevo\n")
+    assert tab.dirty and ed.tabs.tabText(ed.tabs.currentIndex()).endswith("*")
+    data = tab.build()
+    assert ed.write_version(tab, data, src) is False  # refuses the original
+    out = tmp_path / "nativo (editado).tns"
+    assert ed.write_version(tab, data, out)
+    assert src.read_bytes() == original
+    from texas_cas_manager.tns import lua
+    assert lua.read_script(container.parse(out.read_bytes())) == "-- nuevo\n"
+    # a second document opens in its own tab
+    ed.new_document()
+    assert ed.tabs.count() == 2 and ed.tab.is_new
+
+
+def test_protected_script_opens_read_only(window, qapp_wait, tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from native_fixture import native_document
+    src = tmp_path / "protegido.tns"
+    src.write_bytes(native_document(cry="1"))
+    window.open_document(str(src))
+    ed = window.editor
+    assert qapp_wait(lambda: ed.tab is not None and ed.tab.report is not None)
+    assert ed.tab.code.isReadOnly() and not ed.editable
+    assert not ed.act_rebuild.isEnabled() and "editables" in ed.act_rebuild.toolTip()
+
+
+def test_find_replace_and_autoindent(window):
+    from texas_cas_manager.ui.widgets.code_editor import CodeEditor
+    from texas_cas_manager.ui.widgets.find_bar import FindBar
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    ed = CodeEditor()
+    ed.setPlainText("a = 1\nb = a + a\n")
+    bar = FindBar()
+    bar.attach(ed)
+    bar.find.setText("a")
+    bar.replace.setText("x")
+    bar.replace_all()
+    assert ed.toPlainText() == "x = 1\nb = x + x\n"
+    ed.undo()
+    assert ed.toPlainText() == "a = 1\nb = a + a\n"  # one undo step
+    ed.setPlainText("if x then")
+    c = ed.textCursor()
+    c.movePosition(c.MoveOperation.End)
+    ed.setTextCursor(c)
+    QTest.keyClick(ed, Qt.Key_Return)
+    assert ed.toPlainText() == "if x then\n  "

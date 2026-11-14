@@ -262,3 +262,32 @@ def test_real_documents_decode_and_rebuild():
         if rep.scripts and not rep.scripts[0].protected:
             cmp = compare_documents(data, rebuild(data, rep.scripts[0].source))
             assert cmp.content and cmp.level in ("igualdad byte a byte", "igualdad estructural"), (f, cmp.level)
+
+
+# --- images ------------------------------------------------------------------------------
+
+def _bmp16(masks, w=3, h=2, pixels=(0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000, 0xF81F)):
+    import struct
+    stride = ((w * 16 + 31) // 32) * 4
+    rows = [pixels[i * w:(i + 1) * w] for i in range(h)]
+    data = b"".join(struct.pack(f"<{w}H", *r).ljust(stride, b"\0") for r in reversed(rows))  # bottom-up
+    header = struct.pack("<IiiHHIIiiII", 52, w, h, 1, 16, 3, len(data), 0, 0, 0, 0) + struct.pack("<III", *masks)
+    off = 14 + len(header)
+    return b"BM" + struct.pack("<IHHI", off + len(data), 0, 0, off) + header + data
+
+
+@pytest.mark.parametrize("masks", [(0xF800, 0x07E0, 0x001F), (0xF8000000, 0x07E00000, 0x001F0000)])
+def test_bmp16_decoder_standard_and_ti_shifted_masks(masks):
+    from texas_cas_manager.tns import images
+    w, h, rgb = images.decode_bmp16(_bmp16(masks))
+    assert (w, h) == (3, 2)
+    px = [tuple(rgb[i:i + 3]) for i in range(0, len(rgb), 3)]
+    assert px == [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255), (0, 0, 0), (255, 0, 255)]
+
+
+def test_bmp16_decoder_rejects_other_layouts():
+    from texas_cas_manager.tns import images
+    with pytest.raises(images.UnsupportedImage):
+        images.decode_bmp16(_bmp16((0x7C00, 0x03E0, 0x001F)))
+    with pytest.raises(images.UnsupportedImage):
+        images.decode_bmp16(b"PNG...")

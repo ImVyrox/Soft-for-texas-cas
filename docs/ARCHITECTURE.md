@@ -8,19 +8,24 @@ src/texas_cas_manager/
 │   ├── link.py         interfaz Link + HelperLink (USB vía tcm-link) + MockLink (simulada)
 │   └── demo.py         contenido de la calculadora simulada
 ├── tns/                formato .tns (sin Qt: se prueba sin interfaz)
-│   ├── container.py    lector/escritor del contenedor *TIMLP/TIPD
-│   ├── doccrypt.py     cifrado de entradas 0x0D (3DES en modo contador)
-│   ├── _luna_data.py   constantes de Luna 2.1 (licencia MPL 1.1, archivo aparte)
-│   ├── lua.py          crear documentos Lua, leer y sustituir el script
-│   ├── inspect.py      análisis y validación
-│   ├── edit.py         reconstrucción verificada y comparación
+│   ├── container.py    lector/escritor del contenedor *TIMLP/TIPD (analizador binario)
+│   ├── tien.py         cabecera TIEN0100 de las entradas cifradas (MPL)
+│   ├── doccrypt.py     cifrado del cuerpo (3DES en modo contador) + deflate
+│   ├── tixc.py         codificador/decodificador XML TIXC0100 (MPL)
+│   ├── xmldoc.py       lectura del XML (propiedades, widgets, scripts) y sustitución de scripts
+│   ├── images.py       BMP de 16 bits de TI
+│   ├── _luna_data.py   constantes de Luna 2.1 (MPL)
+│   ├── lua.py          crear documentos Lua, leer y sustituir scripts (Luna y nativos)
+│   ├── inspect.py      análisis, informes y validación
+│   ├── edit.py         reconstrucción verificada y comparación por niveles
 │   └── extract.py      exportación de componentes
+├── editor/lua_tools.py autocompletado, indentación, sintaxis con luac5.1 (sin Qt)
 └── ui/
     ├── main_window.py  barra superior, navegación lateral, páginas, barra de estado
     ├── theme.py        temas claro/oscuro (tokens → hoja de estilo Qt)
     ├── workers.py      tareas en segundo plano, LinkService (detección y cola USB)
     ├── pages/          inicio, calculadora, archivos locales, editor, herramientas, ajustes
-    └── widgets/        editor de código Lua, tarjetas, notificaciones, iconos
+    └── widgets/        editor de código Lua, buscar/reemplazar, tarjetas, notificaciones, iconos
 native/tcm-link/        helper USB en C (libticalcs2)
 ```
 

@@ -33,8 +33,11 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 - ✅ Edición del script Lua (resaltado de sintaxis) de documentos creados por Luna o por este programa.
 - ✅ Reconstrucción validada, comparación con el original y guardado como versión nueva. El
   original nunca se modifica.
-- 🔍 El XML de los documentos **guardados por la propia calculadora** está cifrado con claves no
-  documentadas: se muestran y conservan sus componentes, pero no se pueden leer ni editar.
+- ✅ Documentos **guardados por la propia calculadora**: se descifran y se muestran (propiedades,
+  páginas, XML, imágenes, scripts). 🧪 Su script Lua se puede editar y reconstruir, aunque todavía no
+  se ha probado el resultado en la calculadora ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)).
+- ✅ Editor con pestañas, explorador interno, buscar/reemplazar, autocompletado, indentación y
+  comprobación de sintaxis con `luac5.1` si está instalado.
 - ✅ Gestor de archivos locales: abrir, duplicar, renombrar, papelera, importar, exportar recursos.
 - ✅ Tema claro y oscuro, notificaciones y modo demostración sin USB.
 
@@ -73,11 +76,13 @@ Dependencias de Python: `PySide6` y `pycryptodome` (para el cifrado 3DES de los 
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Comunicación USB](docs/USB-PROTOCOL.md)
 - [libnspire, TiLP y alternativas](docs/LIBNSPIRE.md)
-- [Formato .tns](docs/TNS-FORMAT.md)
+- [Formato .tns](docs/TNS-FORMAT.md) · [Ingeniería inversa](docs/TNS-REVERSE-ENGINEERING.md) ·
+  [Editor](docs/TNS-EDITOR.md) · [Compatibilidad](docs/COMPATIBILITY.md)
 - [Desarrollo y pruebas](docs/DEVELOPMENT.md)
 - [Pruebas con hardware real](docs/HARDWARE-TESTS.md)
 
 ## Licencia
 
-MIT (ver [LICENSE](LICENSE)). `src/texas_cas_manager/tns/_luna_data.py` contiene constantes de
-Luna y está bajo la Mozilla Public License 1.1. El helper USB enlaza con libticalcs2 (GPL-2.0+).
+MIT (ver [LICENSE](LICENSE)), salvo estos archivos, bajo la Mozilla Public License 1.1:
+- `src/texas_cas_manager/tns/_luna_data.py`: constantes de Luna.
+- `tns/tixc.py` y `tns/tien.py`: port y datos de Rust TNS. El helper USB enlaza con libticalcs2 (GPL-2.0+).

@@ -35,20 +35,23 @@ Componentes vistos:
 - Cifrado: modo contador con 3DES-ECB. El bloque *i* del flujo es
   `3DES(00 00 00 00 ‖ LE32(base + (i mod 1024)))` y se combina con XOR. Cifrar y descifrar son la
   misma operación. El flujo se repite cada 8 KiB.
-- Las claves y la base del contador se codifican en la cabecera de 40 bytes. Los 8 primeros bytes
-  son siempre `0F CE D8 D2 81 06 86 5B`.
-- **Solo se conocen las claves de la cabecera fija de Luna** (`TIEN_CRYPTED_HEADER`). Los documentos
-  guardados por la calculadora o por el software de TI llevan otra cabecera en cada archivo. Las
-  fuentes revisadas no documentan cómo derivar sus claves, así que el programa **no puede leer** el
-  XML de esos documentos. Se marca como «clave desconocida» y se conserva intacto.
-- En Luna, el CRC y los dos tamaños de una entrada `0x0D` se calculan sobre los bytes almacenados.
-  En los documentos de TI, el «tamaño sin comprimir» es el de los datos TIXC.
+- **Cabecera de 40 bytes (TIEN0100), actualizado en la Fase 3:** 3DES-ECB con una clave fija.
+  Descifrada contiene `TIEN0100`, el tamaño de bloque (`0x400`), la semilla del contador y las tres
+  claves del cuerpo (21 bytes, sin bits de paridad). Los 8 primeros bytes cifrados son siempre
+  `0F CE D8 D2 81 06 86 5B` porque cifran `TIEN0100`. Detalle y experimentos en
+  [TNS-REVERSE-ENGINEERING.md](TNS-REVERSE-ENGINEERING.md).
+- Luna usa siempre la misma cabecera (claves y semilla fijas). Los documentos guardados por TI llevan
+  una cabecera propia en **cada entrada**, que ya se puede leer: su XML se descifra y se valida con
+  el CRC de TI.
+- Metadatos del directorio de una entrada `0x0D`: TI guarda el CRC-32 y el tamaño del **XML
+  decodificado**; Luna, los de los **bytes almacenados**.
 
-### Compresión XML «TIXC»
+### Compresión XML «TIXC0100»
 
-Los datos empiezan por `TIXC0100-1.0?>`. Cada etiqueta de cierre se sustituye por `0x0E` + índice
-de la etiqueta abierta. Los caracteres no ASCII de los XML se escapan (ver `escape_unicode` en Luna).
-Dentro de una sección CDATA, el texto va tal cual en UTF-8.
+`TIXC0100-1.0?>` seguido de un flujo de tokens: diccionarios de nombres de etiqueta y atributo
+(`0x0C` inicio por referencia, `0x0E` cierre, `0x0F` atributo por referencia), tablas empaquetadas
+para letras y dígitos frecuentes, y una forma compacta para UTF-8. Implementado en `tns/tixc.py`
+(port de Rust TNS). Volver a codificar no reproduce el TIXC de TI byte a byte, pero sí el mismo XML.
 
 ## Documentos Lua
 
@@ -58,22 +61,23 @@ genera el documento con un `Document.xml` fijo y la versión `0500`. Requiere OS
 
 ## Qué hace el programa (y qué no)
 
+Ver la tabla completa en [COMPATIBILITY.md](COMPATIBILITY.md). En resumen:
+
 | Capacidad | Estado |
 |---|---|
-| Leer el contenedor de cualquier `.tns` y listar sus componentes | implementado y probado con documentos reales |
-| Reescribir el contenedor byte a byte idéntico | probado con 2 documentos reales y con la salida de Luna |
-| Extraer componentes deflate (imágenes) con verificación CRC | implementado y probado |
-| Crear documentos Lua | idéntico byte a byte a Luna 2.1 (probado) |
-| Leer y editar el script Lua de documentos creados por Luna o por este programa | implementado y probado |
-| Reconstruir conservando byte a byte el resto de componentes | implementado; el validador lo comprueba |
-| Abrir en la calculadora un documento generado | **sin probar en hardware** (Luna lleva años usando este formato) |
-| Leer o editar el XML de documentos guardados por la calculadora | **no posible**: clave desconocida (pendiente de investigación) |
-| Editar un documento Lua después de abrirlo y guardarlo en la calculadora | **no posible**: la calculadora lo guarda con su propia clave |
+| Leer el contenedor de cualquier `.tns` y reescribirlo idéntico | probado con documentos reales y con Luna |
+| Descifrar y decodificar el XML de documentos Luna **y nativos** | probado (CRC de TI verificado) |
+| Leer propiedades, páginas, widgets, variables y scripts | probado |
+| Extraer XML, scripts, imágenes y recursos | probado |
+| Crear documentos Lua | idéntico byte a byte a Luna 2.1 |
+| Editar el script Lua de documentos Luna | probado, byte a byte |
+| Editar el script Lua de documentos nativos | validado aquí; **sin probar en la calculadora** |
+| Editar notas, páginas matemáticas, imágenes o Python | no implementado |
 
 ## Seguridad de los datos
 
 - El original nunca se modifica. Se guarda siempre como versión nueva, con escritura atómica
   (archivo temporal + `link`/`rename`) y sin sobrescribir salvo confirmación.
 - Antes de escribir, el documento reconstruido se vuelve a analizar, se valida su estructura, se
-  relee el script y se comprueba que solo cambió `Problem1.xml`.
+  relee el script y se comprueba que solo cambió el `ProblemN.xml` del script editado.
 - Los componentes desconocidos o ilegibles se copian sin tocar.

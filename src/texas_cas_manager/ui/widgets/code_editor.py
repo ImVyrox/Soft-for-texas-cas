@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QSyntaxHighlighter, QTextCharFormat, QTextFormat
-from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
+from PySide6.QtCore import QRect, QSize, QStringListModel, Qt
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QPainter, QSyntaxHighlighter,
+                           QTextCharFormat, QTextCursor, QTextFormat)
+from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QWidget
+
+from ...editor.lua_tools import completion_words, next_indent
 
 LUA_KEYWORDS = (
     "and break do else elseif end false for function goto if in local nil not or "
@@ -112,25 +115,99 @@ class _Gutter(QWidget):
 
 
 class CodeEditor(QPlainTextEdit):
-    def __init__(self, parent=None, theme: str = "light"):
+    """Lua editor: line numbers, highlighting, auto-indent, completion (Ctrl+Espacio), error marker."""
+
+    def __init__(self, parent=None, theme: str = "light", lua: bool = True):
         super().__init__(parent)
+        self._error_line: int | None = None
+        self._lua = lua
+        self.completer: QCompleter | None = None
         font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         font.setPointSizeF(11)
         self.setFont(font)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 2)
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.gutter = _Gutter(self)
-        self.highlighter = LuaHighlighter(self.document(), theme)
+        self.highlighter = LuaHighlighter(self.document(), theme) if lua else None
         self._theme = theme
         self.blockCountChanged.connect(lambda _: self.setViewportMargins(self.gutter_width(), 0, 0, 0))
         self.updateRequest.connect(self._on_update)
         self.cursorPositionChanged.connect(self._highlight_line)
         self.setViewportMargins(self.gutter_width(), 0, 0, 0)
+        if lua:
+            self.completer = QCompleter(self)
+            self.completer.setWidget(self)
+            self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+            self.completer.setCompletionMode(QCompleter.PopupCompletion)
+            self.completer.activated.connect(self._insert_completion)
+            self.textChanged.connect(lambda: self.set_error_line(None) if self._error_line else None)
 
     def set_theme(self, theme: str) -> None:
         self._theme = theme
-        self.highlighter.set_theme(theme)
+        if self.highlighter:
+            self.highlighter.set_theme(theme)
         self._highlight_line()
+
+    # -- error marker / completion / indentation --------------------------------------
+
+    def set_error_line(self, line: int | None) -> None:
+        """Mark a 1-based line as erroneous (None clears it)."""
+        self._error_line = line
+        self._highlight_line()
+        if line:
+            block = self.document().findBlockByNumber(line - 1)
+            if block.isValid():
+                self.setTextCursor(QTextCursor(block))
+                self.centerCursor()
+
+    def _word_under_cursor(self) -> str:
+        tc = self.textCursor()
+        text = tc.block().text()[: tc.positionInBlock()]
+        i = len(text)
+        while i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_.:"):
+            i -= 1
+        return text[i:]
+
+    def show_completions(self) -> None:
+        if not self.completer:
+            return
+        prefix = self._word_under_cursor()
+        self.completer.setModel(QStringListModel(completion_words(self.toPlainText()), self.completer))
+        self.completer.setCompletionPrefix(prefix)
+        if self.completer.completionCount() == 0:
+            self.completer.popup().hide()
+            return
+        rect = self.cursorRect()
+        rect.setWidth(self.completer.popup().sizeHintForColumn(0) + 30)
+        self.completer.complete(rect)
+
+    def _insert_completion(self, word: str) -> None:
+        tc = self.textCursor()
+        prefix = self._word_under_cursor()
+        tc.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, len(prefix))
+        tc.insertText(word)
+        self.setTextCursor(tc)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        popup = self.completer.popup() if self.completer else None
+        if popup and popup.isVisible() and event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab, Qt.Key_Escape):
+            event.ignore()
+            return
+        if self._lua and event.key() == Qt.Key_Space and event.modifiers() & Qt.ControlModifier:
+            self.show_completions()
+            return
+        if self._lua and event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers():
+            indent = next_indent(self.textCursor().block().text()[: self.textCursor().positionInBlock()])
+            self.textCursor().insertText("\n" + indent)
+            self.ensureCursorVisible()
+            return
+        super().keyPressEvent(event)
+        if popup and popup.isVisible():
+            prefix = self._word_under_cursor()
+            if len(prefix) < 1:
+                popup.hide()
+            else:
+                self.completer.setCompletionPrefix(prefix)
 
     def gutter_width(self) -> int:
         digits = max(3, len(str(self.blockCount())))
@@ -171,4 +248,13 @@ class CodeEditor(QPlainTextEdit):
         sel.format.setProperty(QTextFormat.FullWidthSelection, True)
         sel.cursor = self.textCursor()
         sel.cursor.clearSelection()
-        self.setExtraSelections([sel])
+        selections = [sel]
+        if self._error_line:
+            block = self.document().findBlockByNumber(self._error_line - 1)
+            if block.isValid():
+                err = QTextEdit.ExtraSelection()
+                err.format.setBackground(QColor("#5a1f1f" if self._theme == "dark" else "#fde2e2"))
+                err.format.setProperty(QTextFormat.FullWidthSelection, True)
+                err.cursor = QTextCursor(block)
+                selections.append(err)
+        self.setExtraSelections(selections)
