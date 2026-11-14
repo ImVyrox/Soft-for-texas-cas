@@ -1,18 +1,14 @@
-"""TI document encryption for entries stored with ZIP method ``0x0D``.
+"""Body encryption of TI-encrypted entries (ZIP method ``0x0D``).
 
-Layout of such an entry (from Luna, checked against real documents):
+Layout of such an entry (Luna, Rust TNS, and real documents)::
 
-    40-byte header | encrypted( raw-deflate( TIXC XML-compressed data ) )
+    40-byte TIEN0100 header | crypt( raw-deflate( TIXC stream ) )
 
-The cipher is a counter mode built on 3DES-ECB: block *i* of the keystream is
-``3DES_encrypt(00 00 00 00 || LE32(ivec_base + (i mod 1024)))`` and is XORed
-with the data. Encryption and decryption are the same operation.
-
-Only the keys of Luna's fixed header (``TIEN_CRYPTED_HEADER``) are known.
-Documents saved by the calculator or by TI's software use other headers whose
-key derivation is not documented in the sources reviewed (see
-docs/TNS-FORMAT.md); :func:`decrypt_entry` raises :class:`UnknownKeyError`
-for them instead of guessing.
+``crypt`` is a counter mode on 3DES-ECB: keystream block *i* is
+``3DES(00 00 00 00 || LE32(seed + (i mod 1024)))``, XORed with the data
+(encrypting and decrypting are the same operation). Keys and seed come from
+the entry's own header (:mod:`tien`): every document saved by TI has its own;
+Luna and this program use Luna's fixed header.
 """
 
 from __future__ import annotations
@@ -23,51 +19,60 @@ from functools import lru_cache
 
 from Crypto.Cipher import DES3
 
+from . import tien
 from ._luna_data import DOCCRYPT_IVEC_BASE, DOCCRYPT_KEYS, TIEN_CRYPTED_HEADER
 
-HEADER_SIZE = 40
-_PERIOD = 1024  # counter wraps after 1024 blocks, so the keystream repeats every 8 KiB
+HEADER_SIZE = tien.SIZE
+_PERIOD = tien.BLOCK_SIZE
 
 
-class UnknownKeyError(ValueError):
-    """The entry was encrypted with a header whose keys are unknown."""
+class ProtectedEntryError(ValueError):
+    """The entry's header is not a TIEN0100 header: its content cannot be read."""
 
 
-@lru_cache(maxsize=4)
-def _keystream(keys: tuple[bytes, bytes, bytes], ivec_base: int) -> bytes:
+UnknownKeyError = ProtectedEntryError  # name used before Phase 3
+
+
+@lru_cache(maxsize=16)
+def _keystream(keys: tuple[bytes, bytes, bytes], seed: int) -> bytes:
     cipher = DES3.new(b"".join(keys), DES3.MODE_ECB)
-    blocks = b"".join(
-        b"\0\0\0\0" + struct.pack("<I", (ivec_base + i) & 0xFFFFFFFF) for i in range(_PERIOD)
-    )
+    blocks = b"".join(b"\0\0\0\0" + struct.pack("<I", (seed + i) & 0xFFFFFFFF) for i in range(_PERIOD))
     return cipher.encrypt(blocks)
 
 
-def crypt(data: bytes, keys=DOCCRYPT_KEYS, ivec_base: int = DOCCRYPT_IVEC_BASE) -> bytes:
+def crypt(data: bytes, keys=DOCCRYPT_KEYS, seed: int = DOCCRYPT_IVEC_BASE) -> bytes:
     """XOR ``data`` with the keystream (encrypts and decrypts)."""
-    ks = _keystream(tuple(keys), ivec_base)
-    reps = len(data) // len(ks) + 1
-    stream = (ks * reps)[: len(data)]
+    ks = _keystream(tuple(keys), seed)
+    stream = (ks * (len(data) // len(ks) + 1))[: len(data)]
     return (int.from_bytes(data, "little") ^ int.from_bytes(stream, "little")).to_bytes(len(data), "little")
 
 
-def has_known_header(raw: bytes) -> bool:
+def read_header(raw: bytes) -> tien.TienHeader:
+    try:
+        return tien.parse(raw[:HEADER_SIZE])
+    except tien.HeaderError as exc:
+        raise ProtectedEntryError(str(exc)) from exc
+
+
+def has_luna_header(raw: bytes) -> bool:
     return raw[:HEADER_SIZE] == TIEN_CRYPTED_HEADER
 
 
+has_known_header = has_luna_header  # name used before Phase 3
+
+
 def decrypt_entry(raw: bytes) -> bytes:
-    """Return the XML-compressed (TIXC) data of an encrypted entry."""
-    if len(raw) < HEADER_SIZE:
-        raise ValueError("encrypted entry shorter than its header")
-    if not has_known_header(raw):
-        raise UnknownKeyError("entry encrypted with an unknown key (document not created by Luna or this program)")
+    """Return the TIXC stream of an encrypted entry."""
+    header = read_header(raw)
     try:
-        return zlib.decompress(crypt(raw[HEADER_SIZE:]), -15)
+        return zlib.decompress(crypt(raw[HEADER_SIZE:], header.keys, header.seed), -15)
     except zlib.error as exc:
         raise ValueError(f"decrypted data is not valid deflate ({exc})") from exc
 
 
-def encrypt_entry(tixc: bytes) -> bytes:
-    """Build the raw data of an encrypted entry, exactly as Luna does."""
+def encrypt_entry(tixc: bytes, header: bytes = TIEN_CRYPTED_HEADER) -> bytes:
+    """Raw entry data for ``tixc``, encrypted under ``header`` (default: Luna's, byte-identical to Luna)."""
+    info = read_header(header)
     comp = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15, 8, zlib.Z_DEFAULT_STRATEGY)
     deflated = comp.compress(tixc) + comp.flush()
-    return TIEN_CRYPTED_HEADER + crypt(deflated)
+    return header[:HEADER_SIZE] + crypt(deflated, info.keys, info.seed)

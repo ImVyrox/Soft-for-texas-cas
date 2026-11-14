@@ -76,8 +76,10 @@ def test_unknown_key_documents_are_not_rewritten():
     doc.replace_entry(replace(p, raw=b"\x0f\xce\xd8\xd2\x81\x06\x86\x5b" + bytes(32) + p.raw[40:]))
     data = container.write(doc)
     rep = inspect.analyze(data)
-    assert rep.lua_script is None and "desconocida" in rep.lua_status
-    with pytest.raises(doccrypt.UnknownKeyError):
+    assert rep.lua_script is None
+    assert next(e for e in rep.entries if e.name == "Problem1.xml").status.startswith("protegido")
+    assert rep.interpretation == inspect.PARTIAL
+    with pytest.raises(doccrypt.ProtectedEntryError):
         rebuild(data, "print(1)")
 
 
@@ -105,8 +107,9 @@ def test_export_resources(tmp_path):
     src = tmp_path / "doc.tns"
     src.write_bytes(_doc_with_resource())
     written = {p.name for p in export_resources(src, tmp_path / "out")}
-    assert {"IMG.BMP", "Problem1.xml.tixc", "script.lua"} <= written
-    assert (tmp_path / "out" / "script.lua").read_text(encoding="utf-8") == HELLO
+    assert {"IMG.BMP", "Problem1.xml", "Document.xml", "Problem1.lua", "informe.txt"} <= written
+    assert (tmp_path / "out" / "Problem1.lua").read_text(encoding="utf-8") == HELLO
+    assert (tmp_path / "out" / "Problem1.xml").read_bytes().startswith(b'<?xml version="1.0"')
     assert src.read_bytes() == _doc_with_resource()  # original untouched
 
 

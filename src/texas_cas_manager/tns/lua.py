@@ -1,46 +1,52 @@
-"""Lua documents: build them like Luna does, read and replace their script.
+"""Lua scripts: build Lua documents like Luna, read and replace scripts.
 
-A Lua document is ``Document.xml`` + ``Problem1.xml`` where Problem1 holds one
-``TI.ScriptApp`` widget whose ``sc:script`` element contains the Lua source
-in CDATA. Luna splits any ``]]>`` in the source into two CDATA sections; the
-reader undoes that.
+A Lua script lives in a ``TI.ScriptApp`` widget, as CDATA inside its
+``<sc:script>`` element. Two kinds of documents are handled:
 
-Only scripts inside entries encrypted with Luna's known header can be read or
-replaced (documents produced by Luna or by this program). Documents saved by
-the calculator itself use unknown keys: they can be inspected and their
-entries preserved, but their script is not readable here.
+* **Luna template** (Luna 2.1 or this program): ``Problem1.xml`` is exactly
+  Luna's template around the script, under Luna's fixed TIEN header. Rebuilt
+  byte-identically to what Luna would produce.
+* **Native** (saved by the calculator or TI's software): every encrypted entry
+  has its own TIEN header. The script bytes are replaced in the decoded XML,
+  re-encoded to TIXC and encrypted again under the entry's *own* header; the
+  directory CRC/size follow the entry's original convention. Not yet checked
+  on a calculator (no hardware writes were allowed in Phase 3).
+
+Scripts TI marks as protected (``sc:cry`` != 0) are never modified.
 """
 
 from __future__ import annotations
 
+import re
 import zlib
 from dataclasses import replace
 
-from . import doccrypt
+from . import doccrypt, tixc, xmldoc
 from ._luna_data import DEFAULT_PROCESSED_DOCUMENT_XML, LUA_FOOTER, LUA_HEADER
 from .container import METHOD_TI_ENCRYPTED, TnsDocument, TnsEntry, parse, write
 
 PROBLEM = "Problem1.xml"
-_CDATA_RESTART = b"]]><![CDATA["
 DEFAULT_VERSION = "0500"  # Luna's default; 0700 only when BMP resources are added
+_PROBLEM_RE = re.compile(r"Problem(\d+)\.xml\Z")
 
 
 class NotLuaDocumentError(ValueError):
-    """The document has no Lua script this module can read."""
+    """The document has no Lua script."""
 
 
-def _encode_script(lua_source: str) -> bytes:
-    data = lua_source.encode("utf-8")
-    if data.startswith(b"\xef\xbb\xbf"):
-        data = data[3:]
-    # Same as Luna fix_cdata_end_seq(): "]]>" -> "]]" + "]]><![CDATA[" + ">"
-    return data.replace(b"]]>", b"]]" + _CDATA_RESTART + b">")
+class ProtectedScriptError(ValueError):
+    """The script is marked as protected by TI and is not modified."""
 
 
-def _problem_entry(lua_source: str, template: TnsEntry | None = None) -> TnsEntry:
-    raw = doccrypt.encrypt_entry(LUA_HEADER + _encode_script(lua_source) + LUA_FOOTER)
-    # Luna (minizip, method 0x0D treated as stored) writes CRC and both sizes of
-    # the bytes actually stored; keep that convention for generated entries.
+def problem_names(doc: TnsDocument) -> list[str]:
+    names = [e.name for e in doc.entries if _PROBLEM_RE.match(e.name)]
+    return sorted(names, key=lambda n: int(_PROBLEM_RE.match(n).group(1)))
+
+
+def _luna_problem_entry(lua_source: str, template: TnsEntry | None = None) -> TnsEntry:
+    cdata_body = xmldoc.encode_cdata(lua_source)[len(b"<![CDATA["):-len(b"]]>")]
+    raw = doccrypt.encrypt_entry(LUA_HEADER + cdata_body + LUA_FOOTER)
+    # Luna (minizip, method 0x0D stored as-is) writes CRC and sizes of the stored bytes.
     fields = dict(name=PROBLEM, method=METHOD_TI_ENCRYPTED, raw=raw,
                   crc32=zlib.crc32(raw), uncompressed_size=len(raw))
     if template is None:
@@ -56,30 +62,66 @@ def build_lua_document(lua_source: str) -> bytes:
         uncompressed_size=len(DEFAULT_PROCESSED_DOCUMENT_XML),
         version_made_by=0, name_bytes=b"Document.xml",
     )
-    return write(TnsDocument(version=DEFAULT_VERSION, entries=[doc_xml, _problem_entry(lua_source)]))
+    return write(TnsDocument(version=DEFAULT_VERSION, entries=[doc_xml, _luna_problem_entry(lua_source)]))
+
+
+def is_luna_template(entry: TnsEntry) -> bool:
+    if not (entry.is_encrypted and doccrypt.has_luna_header(entry.raw)):
+        return False
+    try:
+        stream = doccrypt.decrypt_entry(entry.raw)
+    except ValueError:
+        return False
+    return stream.startswith(LUA_HEADER) and stream.endswith(LUA_FOOTER)
+
+
+def list_scripts(doc: TnsDocument) -> list[xmldoc.ScriptInfo]:
+    """Every script of every problem. Raises ProtectedEntryError/TixcError if a problem cannot be read."""
+    scripts = []
+    for name in problem_names(doc):
+        _, xml = xmldoc.decode_entry(doc.entry(name))
+        scripts += xmldoc.problem_info(name, xml).scripts
+    return scripts
 
 
 def read_script(doc: TnsDocument) -> str:
-    """Return the Lua source of a Luna-style document."""
+    """Source of the first script of the document."""
+    scripts = list_scripts(doc)
+    if not scripts:
+        raise NotLuaDocumentError("el documento no contiene scripts Lua")
+    return scripts[0].source
+
+
+def replace_script(doc: TnsDocument, lua_source: str, problem: str = PROBLEM, index: int = 0) -> TnsDocument:
+    """Copy of ``doc`` with one script replaced; every other entry is kept byte for byte."""
     try:
-        entry = doc.entry(PROBLEM)
+        entry = doc.entry(problem)
     except KeyError as exc:
-        raise NotLuaDocumentError("no Problem1.xml in the document") from exc
+        raise NotLuaDocumentError(f"no existe {problem}") from exc
     if not entry.is_encrypted:
-        raise NotLuaDocumentError("Problem1.xml is not TI-encrypted XML")
-    tixc = doccrypt.decrypt_entry(entry.raw)  # may raise UnknownKeyError
-    if not (tixc.startswith(LUA_HEADER) and tixc.endswith(LUA_FOOTER)):
-        raise NotLuaDocumentError("Problem1.xml is not a single Lua script widget")
-    body = tixc[len(LUA_HEADER):len(tixc) - len(LUA_FOOTER)]
-    return body.replace(_CDATA_RESTART, b"").decode("utf-8")
+        raise NotLuaDocumentError(f"{problem} no es XML cifrado de TI")
+    _, xml = xmldoc.decode_entry(entry)
+    scripts = xmldoc.problem_info(problem, xml).scripts
+    if not 0 <= index < len(scripts):
+        raise NotLuaDocumentError(f"{problem} no tiene script número {index + 1}")
+    if scripts[index].protected:
+        raise ProtectedScriptError("TI marca este script como protegido (sc:cry); no se modifica")
 
+    if is_luna_template(entry) and index == 0:
+        new_entry = _luna_problem_entry(lua_source, template=entry)
+    else:
+        convention = xmldoc.metadata_convention(entry, xml)
+        new_xml = xmldoc.replace_script(xml, index, lua_source)
+        raw = doccrypt.encrypt_entry(tixc.encode(new_xml), header=entry.raw[:doccrypt.HEADER_SIZE])
+        if convention == xmldoc.META_LEGACY:
+            crc, size = zlib.crc32(raw), len(raw)
+        else:  # TI's convention: CRC/size of the final XML
+            crc, size = zlib.crc32(new_xml), len(new_xml)
+        new_entry = replace(entry, raw=raw, crc32=crc, uncompressed_size=size)
 
-def replace_script(doc: TnsDocument, lua_source: str) -> TnsDocument:
-    """Copy of ``doc`` with a new script; every other entry is kept byte for byte."""
-    read_script(doc)  # refuses documents whose script cannot be read back
     new = TnsDocument(version=doc.version, entries=list(doc.entries),
                       end_magic=doc.end_magic, archive_comment=doc.archive_comment)
-    new.replace_entry(_problem_entry(lua_source, template=doc.entry(PROBLEM)))
+    new.replace_entry(new_entry)
     return new
 
 
