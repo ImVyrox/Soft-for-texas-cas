@@ -9,8 +9,8 @@ A Lua script lives in a ``TI.ScriptApp`` widget, as CDATA inside its
 * **Native** (saved by the calculator or TI's software): every encrypted entry
   has its own TIEN header. The script bytes are replaced in the decoded XML,
   re-encoded to TIXC and encrypted again under the entry's *own* header; the
-  directory CRC/size follow the entry's original convention. Not yet checked
-  on a calculator (no hardware writes were allowed in Phase 3).
+  directory CRC/size follow the entry's original convention (xmlentry.py).
+  Verified on a CX CAS on 2026-11-14 (edited stopwatch.tns opened and ran).
 
 Scripts TI marks as protected (``sc:cry`` != 0) are never modified.
 """
@@ -21,7 +21,7 @@ import re
 import zlib
 from dataclasses import replace
 
-from . import doccrypt, tixc, xmldoc
+from . import doccrypt, xmldoc, xmlentry
 from ._luna_data import DEFAULT_PROCESSED_DOCUMENT_XML, LUA_FOOTER, LUA_HEADER
 from .container import METHOD_TI_ENCRYPTED, TnsDocument, TnsEntry, parse, write
 
@@ -108,21 +108,11 @@ def replace_script(doc: TnsDocument, lua_source: str, problem: str = PROBLEM, in
         raise ProtectedScriptError("TI marca este script como protegido (sc:cry); no se modifica")
 
     if is_luna_template(entry) and index == 0:
-        new_entry = _luna_problem_entry(lua_source, template=entry)
-    else:
-        convention = xmldoc.metadata_convention(entry, xml)
-        new_xml = xmldoc.replace_script(xml, index, lua_source)
-        raw = doccrypt.encrypt_entry(tixc.encode(new_xml), header=entry.raw[:doccrypt.HEADER_SIZE])
-        if convention == xmldoc.META_LEGACY:
-            crc, size = zlib.crc32(raw), len(raw)
-        else:  # TI's convention: CRC/size of the final XML
-            crc, size = zlib.crc32(new_xml), len(new_xml)
-        new_entry = replace(entry, raw=raw, crc32=crc, uncompressed_size=size)
-
-    new = TnsDocument(version=doc.version, entries=list(doc.entries),
-                      end_magic=doc.end_magic, archive_comment=doc.archive_comment)
-    new.replace_entry(new_entry)
-    return new
+        new = TnsDocument(version=doc.version, entries=list(doc.entries),
+                          end_magic=doc.end_magic, archive_comment=doc.archive_comment)
+        new.replace_entry(_luna_problem_entry(lua_source, template=entry))
+        return new
+    return xmlentry.rewrite(doc, problem, xml, xmldoc.replace_script(xml, index, lua_source))
 
 
 def try_read_script(data: bytes) -> str | None:

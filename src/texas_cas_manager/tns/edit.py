@@ -39,6 +39,37 @@ def rebuild(original: bytes | None, script: str, problem: str = "Problem1.xml", 
     return data
 
 
+def apply_edits(original: bytes, scripts: dict[tuple[str, int], str] | None = None,
+                notes_edits: dict[tuple[str, int], dict[int, str]] | None = None) -> bytes:
+    """Apply script edits ((problem, index) -> source) and note edits ((problem, card) -> {run: text}).
+
+    Every edit is read back from the result, and only the problems that were
+    edited may differ from the original.
+    """
+    from . import notes as notes_mod  # local: notes imports lua, which edit already uses
+
+    data = original
+    for (problem, index), source in sorted((scripts or {}).items()):
+        data = rebuild(data, source, problem, index)
+    for (problem, card), runs in sorted((notes_edits or {}).items()):
+        if runs:
+            data = container.write(notes_mod.edit_notes(container.parse(data), problem, card, runs))
+    problems = inspect.validate_bytes(data)
+    if problems:
+        raise RebuildError("; ".join(problems))
+    doc = container.parse(data)
+    pages = {(p.problem, p.card): p for p in notes_mod.document_pages(doc)} if notes_edits else {}
+    for (problem, card), runs in (notes_edits or {}).items():
+        for idx, text in runs.items():
+            if pages[(problem, card)].runs[idx].text != text:
+                raise RebuildError(f"el texto editado de {problem}, página {card + 1}, no se releyó igual")
+    allowed = {p for p, _ in (scripts or {})} | {p for p, _ in (notes_edits or {})}
+    changed = {c.name for c in compare_components(original, data) if c.status != "igual"}
+    if changed - allowed:
+        raise RebuildError("se modificaron componentes que no debían cambiar: " + ", ".join(sorted(changed - allowed)))
+    return data
+
+
 @dataclass(frozen=True)
 class ComponentChange:
     name: str

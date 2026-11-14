@@ -104,14 +104,14 @@ def test_editor_tabs_native_document_explorer_and_safe_save(window, qapp_wait, t
     assert qapp_wait(lambda: ed.tab is not None and ed.tab.report is not None)
     tab = ed.tab
     roots = {tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())}
-    assert roots == {"Scripts (1)", "XML (2)", "Recursos (1)", "Secciones binarias (3)"}
+    assert roots == {"Páginas (2)", "Scripts (1)", "XML (2)", "Recursos (1)", "Secciones binarias (3)"}
     assert tab.code.toPlainText() == SCRIPT and not tab.code.isReadOnly()
     # XML viewer shows the decoded XML; resources are listed
-    xml_root = next(tab.tree.topLevelItem(i) for i in range(4) if tab.tree.topLevelItem(i).text(0).startswith("XML"))
+    xml_root = section(tab, "XML")
     tab.tree.setCurrentItem(xml_root.child(0))
     assert "<doc ver=" in tab.xml_view.toPlainText() and tab.stack.currentWidget() is tab.xml_view
     # edit the script, rebuild, save as new file: original untouched
-    tab.tree.setCurrentItem(tab.tree.topLevelItem(0).child(0))
+    tab.tree.setCurrentItem(section(tab, "Scripts").child(0))
     tab.code.setPlainText("-- nuevo\n")
     assert tab.dirty and ed.tabs.tabText(ed.tabs.currentIndex()).endswith("*")
     data = tab.build()
@@ -160,3 +160,81 @@ def test_find_replace_and_autoindent(window):
     ed.setTextCursor(c)
     QTest.keyClick(ed, Qt.Key_Return)
     assert ed.toPlainText() == "if x then\n  "
+
+
+
+def section(tab, prefix):
+    return next(tab.tree.topLevelItem(i) for i in range(tab.tree.topLevelItemCount())
+                if tab.tree.topLevelItem(i).text(0).startswith(prefix))
+
+
+def test_notes_pages_edit_status_and_history(window, qapp_wait, tmp_path):
+    import sys
+    from PySide6.QtCore import Qt
+    sys.path.insert(0, str(Path(__file__).parent))
+    from native_fixture import notes_document
+    from texas_cas_manager.tns import notes
+    src = tmp_path / "notas.tns"
+    original = notes_document()
+    src.write_bytes(original)
+    window.open_document(str(src))
+    ed = window.editor
+    assert qapp_wait(lambda: ed.tab is not None and ed.tab.report is not None)
+    tab = ed.tab
+    pages = section(tab, "Páginas")
+    assert pages.childCount() == 2 and pages.child(0).text(0).endswith("[editable]")
+    tab.tree.setCurrentItem(pages.child(0))
+    t = tab.page_table
+    assert tab.stack.currentWidget() is t
+    rows = [(t.item(r, 0).text(), t.item(r, 1).text(), t.item(r, 2).text()) for r in range(t.rowCount())]
+    assert rows[0] == ("Texto", "hola", "editable")
+    assert "cuadro matemático" in t.item(2, 2).toolTip()
+    assert ("Matemáticas", "2+3  →  5") in [r[:2] for r in rows]
+    assert bool(t.item(0, 1).flags() & Qt.ItemIsEditable) and not t.item(2, 1).flags() & Qt.ItemIsEditable
+    t.item(0, 1).setText("adiós ñ")
+    assert tab.dirty and tab.changed_notes() == {("Problem1.xml", 0): {0: "adiós ñ"}}
+    t.item(1, 1).setText("a<b")  # rejected and reverted
+    assert t.item(1, 1).text() == "abc"
+    data = tab.build()
+    assert [r.text for r in notes.document_pages(container.parse(data))[0].runs][:2] == ["adiós ñ", "abc"]
+    assert src.read_bytes() == original
+    history = [tab.history.item(i).text() for i in range(tab.history.count())]
+    assert any("Abierto" in h for h in history) and any("Texto editado" in h for h in history)
+
+
+def test_function_navigation_and_folding(window):
+    from texas_cas_manager.ui.widgets.code_editor import CodeEditor
+    ed = CodeEditor()
+    ed.setPlainText("function a()\n  return 1\nend\nfunction b()\n  if x then\n    y()\n  end\nend\n")
+    ed._update_regions()
+    assert ed.fold_regions() == {1: 3, 4: 8, 5: 7}
+    ed.toggle_fold(4)
+    assert not ed.is_line_visible(5) and not ed.is_line_visible(7) and ed.is_line_visible(8)
+    ed.toggle_fold(4)
+    assert ed.is_line_visible(6)
+    ed.toggle_fold(1)
+    ed.go_to_line(2)  # navigating into a folded block unfolds it
+    assert ed.is_line_visible(2) and ed.textCursor().blockNumber() == 1
+
+
+def test_regex_and_whole_word_search(window):
+    from texas_cas_manager.ui.widgets.code_editor import CodeEditor
+    from texas_cas_manager.ui.widgets.find_bar import FindBar
+    ed = CodeEditor()
+    ed.setPlainText("x = x1 + x\nfoo(12) foo(345)\n")
+    bar = FindBar()
+    bar.attach(ed)
+    bar.find.setText("x")
+    bar.whole.setChecked(True)
+    bar.replace.setText("y")
+    bar.replace_all()
+    assert ed.toPlainText().startswith("y = x1 + y")
+    bar.whole.setChecked(False)
+    bar.regex.setChecked(True)
+    bar.find.setText(r"foo\((\d+)\)")
+    bar.replace.setText(r"bar(\1)")
+    bar.replace_all()
+    assert "bar(12) bar(345)" in ed.toPlainText()
+    bar.find.setText("(")
+    bar.replace_all()
+    assert bar.status.text() == "Regex no válida"

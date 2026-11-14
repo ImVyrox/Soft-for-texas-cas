@@ -46,3 +46,51 @@ def native_document(cry: str = "0", with_image: bool = True) -> bytes:
         entries.append(TnsEntry(name="A1B2.BMP", method=METHOD_DEFLATED, raw=b"", crc32=0, uncompressed_size=0,
                                 name_bytes=b"A1B2.BMP").with_payload(bmp))
     return write(TnsDocument(version="0601", entries=entries))
+
+
+# --- Notes pages (structure observed in a document saved by a CX CAS, OS 4.5.5) --------
+
+FORMAT_MANAGER = (
+    '<formatManager tableSize="3" capacity="10">'
+    '<formatEntry entryIndex="0" entryID="0" entryRefCnt="2147483647" tc="0" fc="268435199" fs="10" fst="0" cc="0" '
+    'fest="0" feun="0" fesub="0" fesup="0" fn0="TI-Nspire Sans"></formatEntry>'
+    '<formatEntry entryIndex="1" entryID="1" entryRefCnt="1" tc="0" fc="268435199" fs="10" fst="0" cc="0" '
+    'fest="0" feun="0" fesub="0" fesup="0" fn0="TI-Nspire"></formatEntry>'
+    '<formatEntry entryIndex="2" entryID="2" entryRefCnt="1" tc="254" fc="268435199" fs="10" fst="0" cc="0" '
+    'fest="0" feun="0" fesub="0" fesup="0" fn0="TI-Nspire"></formatEntry></formatManager>')
+
+
+def word(text: str, np: str = "1", children: str = "") -> str:
+    if not text and not children:
+        return f'<leaf name="1word" np="{np}" id0="0" pp0="0"/>'
+    return f'<leaf name="1word" np="{np}" id0="0" pp0="{len(text)}">{text}{children}</leaf>'
+
+
+def notes_inner(lines: list[str]) -> str:
+    paras = "".join(f'<node name="1para"><node name="1rtline">{line}</node></node>' for line in lines)
+    return f'<r2dtotree version="1">{FORMAT_MANAGER}<node name="1doc">{paras}</node></r2dtotree>'
+
+
+MATH_BOX = ('<node name="0el" flags="8" id0="1"><mbox><attr iomode="1" comp="2" active="true" id0="2"/>'
+            '<out><full>5</full><err>0</err></out></mbox><node name="0el" id0="2">'
+            '<leaf name="0text" np="1" id0="2" pp0="3">2+3</leaf></node></node>')
+
+
+def _escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def notes_problem_xml(pages: list[list[str]] | None = None) -> bytes:
+    if pages is None:
+        pages = [[word("hola"), word("abc") + MATH_BOX + word("")],
+                 [word("π"), word("x"), word("", children='<cursor index="0"/>')]]
+    cards = "".join(
+        '<card clay="0" h1="10000" h2="10000" w1="10000" w2="10000"><isDummyCard>0</isDummyCard><flag>0</flag>'
+        '<wdgt xmlns:np="urn:TI.Notepad" type="TI.Notepad" ver="2.0"><np:mFlags>1024</np:mFlags>'
+        f'<np:value>3</np:value><np:fmtxt>{_escape(notes_inner(p))}</np:fmtxt></wdgt></card>' for p in pages)
+    return DECL + ('<prob xmlns="urn:TI.Problem" ver="1.0" pbname=""><sym></sym>' + cards + "</prob>").encode()
+
+
+def notes_document(pages: list[list[str]] | None = None) -> bytes:
+    return write(TnsDocument(version="0601", entries=[encrypted_entry("Document.xml", DOCUMENT_XML),
+                                                       encrypted_entry("Problem1.xml", notes_problem_xml(pages))]))

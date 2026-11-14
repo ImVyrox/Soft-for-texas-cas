@@ -9,16 +9,19 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
-                               QScrollArea, QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolBar,
+import time
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+                               QHeaderView, QLabel, QListWidget, QMenu, QPlainTextEdit, QScrollArea, QSplitter,
+                               QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolBar,
                                QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...config import atomic_write, unique_path
 from ...editor import lua_tools
-from ...tns import container, images, inspect
-from ...tns.edit import RebuildError, compare_documents, rebuild, text_diff
+from ...tns import container, images, inspect, notes
+from ...tns.edit import RebuildError, apply_edits, compare_documents, rebuild, text_diff
 from ...tns.extract import export_resources
 from ..widgets.code_editor import CodeEditor
 from ..widgets.common import Card, confirm, human_size, icon, label
@@ -30,7 +33,26 @@ function on.paint(gc)
   gc:drawString("Hola, TI-Nspire", 10, 10)
 end
 """
-ROLE = Qt.UserRole  # ("script", key) | ("xml", name) | ("resource", name) | ("entry", name)
+ROLE = Qt.UserRole  # ("script", key) | ("page", (problem, card)) | ("xml", name) | ("resource", name) | ("entry", name)
+
+# How the explorer marks content (shown with a colour and a label).
+STATUS = {
+    "editable": ("editable", "#15803d"),
+    "readonly": ("solo lectura", "#5f6b7a"),
+    "unknown": ("desconocido", "#b45309"),
+    "protected": ("protegido", "#c2410c"),
+}
+
+
+# Short names for widget types seen in real documents; others are shown as stored.
+WIDGET_NAMES = {"TI.Notepad": "Notas", "TI.ScriptApp": "Script Lua"}
+
+
+def _mark(item: QTreeWidgetItem, status: str, why: str = "") -> None:
+    label, colour = STATUS[status]
+    item.setText(0, f"{item.text(0)}  [{label}]")
+    item.setForeground(0, QBrush(QColor(colour)))
+    item.setToolTip(0, why or label)
 
 
 def _xml_for_display(xml: bytes) -> str:
@@ -54,6 +76,10 @@ def report_html(path_name: str, rep) -> str:
             f"<p>{html.escape(rep.lua_status)}</p><p><b>Componentes</b></p><ul>{items}</ul>"
             f"<p>Reescritura idéntica del contenedor: <b>{'sí' if rep.roundtrip_identical else 'no'}</b></p>"
             f"<p><b>Problemas</b></p><ul>{problems}</ul>")
+
+
+def rep_short(rep) -> str:
+    return f"{rep.origin}, {len(rep.entries)} secciones, {len(rep.scripts)} scripts"
 
 
 class CompareDialog(QDialog):
@@ -100,6 +126,9 @@ class DocumentTab(QWidget):
         self.protected: set[tuple[str, int]] = set()
         self.current: tuple[str, int] | None = None
         self.last_saved: Path | None = None
+        self.pages: list[notes.NotesPage] = []
+        self.note_edits: dict[tuple[str, int], dict[int, str]] = {}
+        self.current_page: tuple[str, int] | None = None
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -117,8 +146,31 @@ class DocumentTab(QWidget):
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
+        self.code_page = QWidget()
+        cpl = QVBoxLayout(self.code_page)
+        cpl.setContentsMargins(0, 0, 0, 0)
+        nav = QHBoxLayout()
+        self.functions = QComboBox()
+        self.functions.setToolTip("Ir a una función del script")
+        self.functions.activated.connect(lambda i: self.code.go_to_line(self.functions.itemData(i))
+                                         if self.functions.itemData(i) else None)
+        nav.addWidget(QLabel("Funciones:"))
+        nav.addWidget(self.functions, 1)
+        cpl.addLayout(nav)
         self.code = CodeEditor(theme=theme_name)
         self.code.textChanged.connect(self._code_changed)
+        cpl.addWidget(self.code, 1)
+        self.lint = QLabel("")
+        self.lint.setWordWrap(True)
+        cpl.addWidget(self.lint)
+        self._lint_timer = QTimer(self, singleShot=True, interval=1200)
+        self._lint_timer.timeout.connect(self._lint)
+        self.page_table = QTableWidget(0, 3)
+        self.page_table.setHorizontalHeaderLabels(["Elemento", "Contenido", "Estado"])
+        self.page_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.page_table.verticalHeader().setVisible(False)
+        self.page_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.page_table.itemChanged.connect(self._note_changed)
         self.xml_view = CodeEditor(theme=theme_name, lua=False)
         self.xml_view.setReadOnly(True)
         self.info = QTextBrowser()
@@ -126,7 +178,7 @@ class DocumentTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidget(self.image)
         scroll.setWidgetResizable(True)
-        for w in (self.code, self.xml_view, self.info, scroll):
+        for w in (self.code_page, self.xml_view, self.info, scroll, self.page_table):
             self.stack.addWidget(w)
         self.image_page = scroll
         self.find_bar = FindBar()
@@ -134,11 +186,20 @@ class DocumentTab(QWidget):
         cl.addWidget(self.find_bar)
         split.addWidget(center)
 
-        right = Card("Propiedades")
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        props_card = Card("Propiedades")
         self.props = QTextBrowser()
-        right.body.addWidget(self.props)
+        props_card.body.addWidget(self.props)
+        hist_card = Card("Historial")
+        self.history = QListWidget()
+        self.history.setMaximumHeight(170)
+        hist_card.body.addWidget(self.history)
+        rl.addWidget(props_card, 3)
+        rl.addWidget(hist_card, 1)
         split.addWidget(right)
-        split.setSizes([240, 640, 330])
+        split.setSizes([290, 600, 320])
         self._show_info("<h3>Cargando…</h3>")
 
     # -- state ------------------------------------------------------------------
@@ -149,12 +210,26 @@ class DocumentTab(QWidget):
         return name + (" *" if self.dirty else "")
 
     @property
-    def editable(self) -> bool:
-        return bool(set(self.originals) - self.protected)
+    def dirty(self) -> bool:
+        return any(self.edits.get(k, v) != v for k, v in self.originals.items()) or bool(self.changed_notes())
+
+    def changed_notes(self) -> dict[tuple[str, int], dict[int, str]]:
+        out = {}
+        for key, runs in self.note_edits.items():
+            page = next(p for p in self.pages if (p.problem, p.card) == key)
+            diff = {i: t for i, t in runs.items() if page.runs[i].text != t}
+            if diff:
+                out[key] = diff
+        return out
 
     @property
-    def dirty(self) -> bool:
-        return any(self.edits.get(k, v) != v for k, v in self.originals.items())
+    def editable(self) -> bool:  # noqa: F811 (scripts or notes)
+        return bool(set(self.originals) - self.protected) or any(
+            r.editable for p in self.pages for r in p.runs)
+
+    def log(self, text: str) -> None:
+        self.history.addItem(f"{time.strftime('%H:%M:%S')}  {text}")
+        self.history.scrollToBottom()
 
     @property
     def is_new(self) -> bool:
@@ -164,6 +239,40 @@ class DocumentTab(QWidget):
         if self.current is not None and self.current not in self.protected:
             self.edits[self.current] = self.code.toPlainText()
             self.changed.emit()
+            self._lint_timer.start()
+        self._refresh_functions()
+
+    def _refresh_functions(self) -> None:
+        self.functions.blockSignals(True)
+        self.functions.clear()
+        self.functions.addItem("—", None)
+        for name, line in lua_tools.functions(self.code.toPlainText()):
+            self.functions.addItem(f"{name}  (línea {line})", line)
+        self.functions.blockSignals(False)
+
+    def _lint(self) -> None:
+        """Background syntax check (luac5.1) plus TI-Nspire API warnings, after a pause in typing."""
+        source = self.code.toPlainText()
+        key = self.current
+
+        def done(result):
+            syntax, warnings = result
+            if key != self.current:
+                return
+            self.code.set_warning_lines({line for line, _ in warnings})
+            parts = []
+            if syntax.available and not syntax.ok:
+                self.code._error_line = syntax.line
+                self.code._highlight_line()
+                parts.append(f"✘ Línea {syntax.line}: {syntax.message}")
+            elif syntax.available:
+                parts.append("✔ Sintaxis Lua 5.1 correcta")
+            else:
+                parts.append(syntax.message)
+            parts += [f"⚠ Línea {line}: {msg}" for line, msg in warnings[:5]]
+            self.lint.setText("   ".join(parts))
+
+        run_task(lambda p: (lua_tools.check_syntax(source), lua_tools.ti_warnings(source)), done)
 
     def _show_info(self, html_text: str) -> None:
         self.info.setHtml(html_text)
@@ -195,11 +304,21 @@ class DocumentTab(QWidget):
                             f"{html.escape(err)}</p>")
             self.message.emit("error", f"No se pudo abrir {self.path.name}: {err}")
 
-        run_task(lambda p: (lambda d: (d, inspect.analyze(d)))(self.path.read_bytes()), self._loaded, failed)
+        def work(p):
+            data = self.path.read_bytes()
+            rep = inspect.analyze(data)
+            try:
+                pages = notes.document_pages(container.parse(data))
+            except ValueError:  # a protected problem: pages stay unknown
+                pages = []
+            return data, rep, pages
+
+        run_task(work, self._loaded, failed)
 
     def _loaded(self, result) -> None:
-        self.original, self.report = result
+        self.original, self.report, self.pages = result
         self.doc = container.parse(self.original)
+        self.log(f"Abierto {self.path.name} ({rep_short(self.report)})")
         rep = self.report
         self.originals = {(s.problem, s.index): s.source for s in rep.scripts}
         self.edits = dict(self.originals)
@@ -226,11 +345,32 @@ class DocumentTab(QWidget):
 
         scripts = []
         for s in rep.scripts:
-            it = QTreeWidgetItem([(s.title or f"Script {s.index + 1}") + f" — {s.problem}"
-                                  + (" (protegido)" if s.protected else "")])
+            it = QTreeWidgetItem([(s.title or f"Script {s.index + 1}") + f" — {s.problem}"])
             it.setIcon(0, icon("editor"))
             it.setData(0, ROLE, ("script", (s.problem, s.index)))
             scripts.append(it)
+        pages = []
+        protected_problems = {e.name for e in rep.entries if e.kind == "XML" and not e.readable}
+        for k, page in enumerate(self.pages, 1):
+            it = QTreeWidgetItem([f"Pág. {k} · {WIDGET_NAMES.get(page.widget, page.widget.replace('TI.', ''))}"])
+            it.setData(0, ROLE, ("page", (page.problem, page.card)))
+            if not page.readable:
+                _mark(it, "unknown", page.error)
+            elif page.is_notes and any(r.editable for r in page.runs):
+                _mark(it, "editable", "Texto de notas editable")
+            elif page.widget == "TI.ScriptApp":
+                _mark(it, "readonly", "El script se edita en «Scripts»")
+            else:
+                _mark(it, "readonly", "Sin contenido editable en esta página")
+            pages.append(it)
+        for name in sorted(protected_problems):
+            it = QTreeWidgetItem([name])
+            _mark(it, "protected", "No se puede descifrar")
+            pages.append(it)
+        section("Páginas", pages, "Sin páginas")
+        for it in scripts:
+            key = it.data(0, ROLE)[1]
+            _mark(it, "protected" if key in self.protected else "editable")
         section("Scripts", scripts, "Sin scripts Lua")
 
         xmls, resources, entries = [], [], []
@@ -238,9 +378,13 @@ class DocumentTab(QWidget):
             it = QTreeWidgetItem([e.name])
             it.setIcon(0, icon("file"))
             it.setToolTip(0, f"{e.kind} · {e.method_name} · {e.status}")
-            if not e.readable:
-                it.setForeground(0, self.palette().placeholderText())
             it.setData(0, ROLE, ("xml" if e.kind == "XML" else "resource", e.name))
+            if e.status.startswith("protegido"):
+                _mark(it, "protected", e.status)
+            elif not e.readable:
+                _mark(it, "unknown", e.status)
+            else:
+                _mark(it, "readonly")
             (xmls if e.kind == "XML" else resources).append(it)
             bin_item = QTreeWidgetItem([e.name])
             bin_item.setData(0, ROLE, ("entry", e.name))
@@ -248,7 +392,7 @@ class DocumentTab(QWidget):
         section("XML", xmls, "Sin XML")
         section("Recursos", resources, "Sin recursos")
         section("Secciones binarias", entries, "—")
-        first = scripts[0] if scripts else (xmls[0] if xmls else None)
+        first = scripts[0] if scripts else (pages[0] if pages else (xmls[0] if xmls else None))
         if first:
             self.tree.setCurrentItem(first)
         else:
@@ -281,7 +425,10 @@ class DocumentTab(QWidget):
             self.current = key
             locked = key in self.protected
             self.code.setReadOnly(locked)
-            self.stack.setCurrentWidget(self.code)
+            self.functions.setEnabled(True)
+            self.stack.setCurrentWidget(self.code_page)
+            self._refresh_functions()
+            self._lint_timer.start()
             self.find_bar.attach(self.code, with_replace=not locked)
             if self.report:
                 self.props.setHtml(self._entry_props(key[0]) + (
@@ -289,6 +436,9 @@ class DocumentTab(QWidget):
             return
         self.current = None
         if self.report is None:
+            return
+        if kind == "page":
+            self._show_page(key)
             return
         self.props.setHtml(self._entry_props(key))
         entry = self.doc.entry(key)
@@ -324,17 +474,83 @@ class DocumentTab(QWidget):
         self._show_info(f"<h3>{html.escape(key)}</h3><p>Recurso de {human_size(len(content))}; "
                         "no hay visor para este tipo. Se puede extraer.</p>")
 
+    # -- pages -----------------------------------------------------------------------
+
+    def _show_page(self, key: tuple[str, int]) -> None:
+        page = next(p for p in self.pages if (p.problem, p.card) == key)
+        self.current_page = None  # filling the table is not an edit
+        t = self.page_table
+        t.blockSignals(True)
+        t.setRowCount(0)
+        edits = self.note_edits.get(key, {})
+
+        def add(kind: str, content: str, status: str, why: str = "", run: int | None = None) -> None:
+            r = t.rowCount()
+            t.insertRow(r)
+            label, colour = STATUS[status]
+            for c, text in enumerate((kind, content, label)):
+                item = QTableWidgetItem(text)
+                if why:
+                    item.setToolTip(why)
+                flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+                if c == 1 and status == "editable":
+                    flags |= Qt.ItemIsEditable
+                    item.setData(Qt.UserRole, run)
+                item.setFlags(flags)
+                if c == 2:
+                    item.setForeground(QBrush(QColor(colour)))
+                t.setItem(r, c, item)
+
+        for run in page.runs:
+            if run.text or run.editable:
+                add("Texto", edits.get(run.index, run.text), "editable" if run.editable else "readonly",
+                    "" if run.editable else run.reason, run.index)
+        for m in page.math:
+            add("Matemáticas", f"{m.input}  →  {m.output}" if m.output else m.input or "(vacío)", "readonly",
+                "cuadro matemático (no editable todavía)")
+        for img in page.images:
+            add("Imagen", img, "readonly", "recurso del documento")
+        if not page.is_notes:
+            add(page.widget, "Contenido de este tipo de página", "readonly" if page.readable else "unknown",
+                "sin editor para este widget")
+        t.blockSignals(False)
+        header = t.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.current_page = key
+        self.stack.setCurrentWidget(t)
+        self.props.setHtml(f"<h3>Página {page.card + 1} de {html.escape(page.problem)}</h3>"
+                           f"<p>Widget: {html.escape(page.widget)}<br>Párrafos: {page.paragraphs}<br>"
+                           f"Fragmentos de texto: {len(page.runs)} ({sum(r.editable for r in page.runs)} editables)"
+                           f"<br>Cuadros matemáticos: {len(page.math)}<br>Imágenes: {len(page.images)}</p>"
+                           "<p>Doble clic en un texto editable para cambiarlo. Solo se permiten letras (incluidas "
+                           "á é í ó ú ü ñ), números, espacios, π y puntuación básica.</p>")
+
+    def _note_changed(self, item: QTableWidgetItem) -> None:
+        if self.current_page is None or item.column() != 1 or item.data(Qt.UserRole) is None:
+            return
+        run, text = item.data(Qt.UserRole), item.text()
+        page = next(p for p in self.pages if (p.problem, p.card) == self.current_page)
+        if not text or not notes.ALLOWED.match(text):
+            self.message.emit("error", "Texto no permitido en notas: usa letras, números, espacios, π y puntuación "
+                                       "básica (sin < > & \").")
+            self.page_table.blockSignals(True)
+            item.setText(self.note_edits.get(self.current_page, {}).get(run, page.runs[run].text))
+            self.page_table.blockSignals(False)
+            return
+        self.note_edits.setdefault(self.current_page, {})[run] = text
+        self.log(f"Texto editado: página {page.card + 1}, fragmento {run + 1}")
+        self.changed.emit()
+
     # -- build ---------------------------------------------------------------------
 
     def build(self) -> bytes:
         """Rebuilt document with every edited script (raises RebuildError/ValueError). Thread-safe."""
         if self.is_new:
             return rebuild(None, self.edits[("Problem1.xml", 0)])
-        data = self.original
-        for (problem, index), source in sorted(self.edits.items()):
-            if source != self.originals.get((problem, index)):
-                data = rebuild(data, source, problem, index)
-        return data
+        scripts = {k: v for k, v in self.edits.items() if v != self.originals.get(k)}
+        return apply_edits(self.original, scripts, self.changed_notes())
 
 
 class EditorPage(QWidget):
@@ -353,27 +569,38 @@ class EditorPage(QWidget):
         root.addWidget(label("Editor .tns", "title"))
 
         tb = QToolBar()
-        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        tb.addAction(icon("new"), "Nuevo Lua", self.new_document)
+        tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)  # ten actions must fit at 1280 px
+        new_btn = QToolButton()
+        new_btn.setText("Nuevo")
+        new_btn.setIcon(icon("new"))
+        new_btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        new_btn.setPopupMode(QToolButton.InstantPopup)
+        new_menu = QMenu(new_btn)
+        new_menu.addAction(icon("new"), "Documento Lua vacío", self.new_document)
+        new_menu.addAction(icon("import"), "Desde un archivo .lua…", self.import_lua)
+        new_btn.setMenu(new_menu)
+        tb.addWidget(new_btn)
         tb.addAction(icon("open"), "Abrir…", self.choose_file)
-        tb.addAction(icon("import"), "Importar .lua…", self.import_lua)
         tb.addSeparator()
         self.act_save = tb.addAction(icon("save"), "Guardar como…", self.save_new_version)
         self.act_extract = tb.addAction(icon("export"), "Extraer…", self.extract)
         self.act_rebuild = tb.addAction(icon("build"), "Reconstruir", self.rebuild_and_report)
         self.act_validate = tb.addAction(icon("check"), "Validar", self.validate)
+        self.act_format = tb.addAction(icon("editor"), "Formatear", self.format_script)
         cmp_btn = QToolButton()
         cmp_btn.setText("Comparar")
         cmp_btn.setIcon(icon("diff"))
-        cmp_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        cmp_btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         cmp_btn.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(cmp_btn)
-        self.act_cmp_orig = menu.addAction("Con el original (cambios sin guardar)", self.compare_with_original)
+        self.act_cmp_orig = menu.addAction("Vista previa de cambios (original frente a editado)",
+                                           self.compare_with_original)
         self.act_cmp_file = menu.addAction("Con otro documento .tns…", self.compare_with_file)
         cmp_btn.setMenu(menu)
         self.cmp_btn = cmp_btn
         tb.addWidget(cmp_btn)
-        self.act_send = tb.addAction(icon("upload"), "Enviar a la calculadora", self._send)
+        self.act_send = tb.addAction(icon("upload"), "Enviar", self._send)
+        self.act_send.setToolTip("Enviar la última versión guardada a la calculadora")
         root.addWidget(tb)
 
         self.tabs = QTabWidget()
@@ -381,6 +608,9 @@ class EditorPage(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(lambda _: self._update_actions())
+        self._format_timer = QTimer(self, interval=500)  # the current item can change without a signal here
+        self._format_timer.timeout.connect(self._update_format_action)
+        self._format_timer.start()
         self.placeholder = QTextBrowser()
         self.placeholder.setHtml("<h3>Ningún documento abierto</h3><p>Abre un .tns o crea un documento Lua. "
                                  "El archivo original nunca se modifica: los cambios se reconstruyen, se validan "
@@ -431,6 +661,7 @@ class EditorPage(QWidget):
         for i in range(self.tabs.count()):
             t = self.tabs.widget(i)
             t.edits = dict(t.originals)
+            t.note_edits = {}
 
     def _rebuild(self) -> bytes | None:
         try:
@@ -486,6 +717,18 @@ class EditorPage(QWidget):
             act.setToolTip("" if enabled else why)
         self.cmp_btn.setEnabled(bool(saved))
         self.cmp_btn.setToolTip("" if saved else "Abre un documento .tns guardado")
+        self._update_format_action()
+
+    def _update_format_action(self) -> None:
+        t = self.tab
+        if not self.luac:
+            ok, why = False, "Formatear necesita luac5.1 para comprobar que el código no cambia"
+        elif t is None or t.current is None or t.current in t.protected:
+            ok, why = False, "Selecciona un script editable"
+        else:
+            ok, why = True, ""
+        self.act_format.setEnabled(ok)
+        self.act_format.setToolTip(why or "Reindenta el script; solo se aplica si el bytecode compilado no cambia")
 
     # -- open / new ------------------------------------------------------------------
 
@@ -547,9 +790,29 @@ class EditorPage(QWidget):
                     return
                 parts.append(syntax.message)
             parts.append(f"documento reconstruido válido ({human_size(len(data))})")
+            tab.log("Validado")
             self.message.emit("ok", "; ".join(parts) + ".")
 
         run_task(work, done, lambda err: self.message.emit("error", f"Validación fallida: {err}"))
+
+    def format_script(self) -> None:
+        tab = self.tab
+        source = tab.code.toPlainText()
+
+        def done(formatted):
+            if formatted == source:
+                self.message.emit("info", "El script ya tenía el formato esperado.")
+                return
+            cursor = tab.code.textCursor()
+            cursor.beginEditBlock()  # one undo step
+            cursor.select(cursor.SelectionType.Document)
+            cursor.insertText(formatted)
+            cursor.endEditBlock()
+            tab.log("Script formateado (bytecode idéntico)")
+            self.message.emit("ok", "Formato aplicado: el bytecode compilado es idéntico al original.")
+
+        run_task(lambda p: lua_tools.safe_format(source, self.luac), done,
+                 lambda err: self.message.emit("error", f"No se aplica el formato: {err}"))
 
     def rebuild_and_report(self) -> None:
         tab = self.tab
@@ -560,6 +823,7 @@ class EditorPage(QWidget):
                 return
             cmp = compare_documents(tab.original, data)
             changed = [c.name for c in cmp.components if c.status != "igual"]
+            tab.log(f"Reconstruido: cambia {', '.join(changed) or 'nada'}")
             self.message.emit("ok", f"Reconstrucción válida: {cmp.level}. Cambiado: "
                                     f"{', '.join(changed) or 'nada'}; el resto se conserva byte a byte.")
 
@@ -573,6 +837,10 @@ class EditorPage(QWidget):
                 new = tab.edits.get(key, old)
                 if new != old:
                     diffs.append((f"Script {key[0]} #{key[1] + 1}", text_diff(old, new)))
+            for (problem, card), runs in tab.changed_notes().items():
+                page = next(p for p in tab.pages if (p.problem, p.card) == (problem, card))
+                lines = [f"- {page.runs[i].text}\n+ {t}" for i, t in sorted(runs.items())]
+                diffs.append((f"Notas {problem} pág. {card + 1}", "\n".join(lines)))
         da, db = container.parse(a), container.parse(b)
         names_b = {e.name for e in db.entries}
         for e in da.entries:
@@ -590,6 +858,7 @@ class EditorPage(QWidget):
         tab = self.tab
 
         def done(data):
+            tab.log("Vista previa de cambios")
             CompareDialog(self, "Original frente a versión editada", compare_documents(tab.original, data),
                           self._diffs(tab.original, data, tab)).exec()
 
@@ -616,7 +885,8 @@ class EditorPage(QWidget):
             return
         out = unique_path(Path(base) / f"{tab.path.stem} (extraído)")
         run_task(lambda p: export_resources(tab.path, out),
-                 lambda written: self.message.emit("ok", f"{len(written)} archivos extraídos en {out}"),
+                 lambda written: (tab.log(f"Extraído en {out.name}"),
+                                  self.message.emit("ok", f"{len(written)} archivos extraídos en {out}")),
                  lambda err: self.message.emit("error", f"No se pudo extraer: {err}"))
 
     def save_new_version(self) -> None:
@@ -646,6 +916,7 @@ class EditorPage(QWidget):
             self.message.emit("error", f"No se pudo guardar: {exc}")
             return False
         tab.last_saved = target
+        tab.log(f"Guardado como {target.name}")
         self.message.emit("ok", f"Guardado {target.name} (el original no se ha modificado)")
         self._update_actions()
         return True

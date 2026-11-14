@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QRect, QSize, QStringListModel, Qt
+from PySide6.QtCore import QRect, QSize, QStringListModel, Qt, QTimer
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QPainter, QSyntaxHighlighter,
                            QTextCharFormat, QTextCursor, QTextFormat)
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QWidget
 
-from ...editor.lua_tools import completion_words, next_indent
+from ...editor.lua_tools import block_regions, completion_words, next_indent
 
 LUA_KEYWORDS = (
     "and break do else elseif end false for function goto if in local nil not or "
@@ -113,6 +113,9 @@ class _Gutter(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         self.editor.paint_gutter(event)
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.editor.gutter_clicked(event.position().y())
+
 
 class CodeEditor(QPlainTextEdit):
     """Lua editor: line numbers, highlighting, auto-indent, completion (Ctrl+Espacio), error marker."""
@@ -120,7 +123,10 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, parent=None, theme: str = "light", lua: bool = True):
         super().__init__(parent)
         self._error_line: int | None = None
+        self._warning_lines: set[int] = set()
         self._lua = lua
+        self._regions: dict[int, int] = {}  # first line -> last line (1-based)
+        self._folded: set[int] = set()
         self.completer: QCompleter | None = None
         font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         font.setPointSizeF(11)
@@ -141,12 +147,92 @@ class CodeEditor(QPlainTextEdit):
             self.completer.setCompletionMode(QCompleter.PopupCompletion)
             self.completer.activated.connect(self._insert_completion)
             self.textChanged.connect(lambda: self.set_error_line(None) if self._error_line else None)
+            self._region_timer = QTimer(self, singleShot=True, interval=400)
+            self._region_timer.timeout.connect(self._update_regions)
+            self.textChanged.connect(self._text_changed_for_folding)
 
     def set_theme(self, theme: str) -> None:
         self._theme = theme
         if self.highlighter:
             self.highlighter.set_theme(theme)
         self._highlight_line()
+
+    # -- folding ------------------------------------------------------------------
+
+    def _text_changed_for_folding(self) -> None:
+        if self._folded:
+            self.unfold_all()  # editing hidden lines would be confusing
+        self._region_timer.start()
+
+    def _update_regions(self) -> None:
+        regions: dict[int, int] = {}
+        for start, end in block_regions(self.toPlainText()):
+            regions.setdefault(start, end)  # outermost block starting on that line
+        self._regions = regions
+        self.gutter.update()
+
+    def fold_regions(self) -> dict[int, int]:
+        return dict(self._regions)
+
+    def _set_lines_visible(self, start: int, end: int, visible: bool) -> None:
+        block = self.document().findBlockByNumber(start)  # line start+1 (0-based start)
+        while block.isValid() and block.blockNumber() < end:
+            block.setVisible(visible)
+            block = block.next()
+
+    def toggle_fold(self, line: int) -> None:
+        """Fold or unfold the block that starts on 1-based ``line``."""
+        if line not in self._regions:
+            return
+        end = self._regions[line]
+        folding = line not in self._folded
+        if folding:
+            self._folded.add(line)
+        else:
+            self._folded.discard(line)
+        self._set_lines_visible(line, end - 1, not folding)
+        for inner in sorted(self._folded):  # keep inner folds folded when unfolding
+            if not folding and line < inner < end:
+                self._set_lines_visible(inner, self._regions[inner] - 1, False)
+        self.document().markContentsDirty(0, self.document().characterCount())
+        self.viewport().update()
+        self.gutter.update()
+
+    def unfold_all(self) -> None:
+        self._folded.clear()
+        block = self.document().firstBlock()
+        while block.isValid():
+            block.setVisible(True)
+            block = block.next()
+        self.document().markContentsDirty(0, self.document().characterCount())
+        self.viewport().update()
+
+    def is_line_visible(self, line: int) -> bool:
+        return self.document().findBlockByNumber(line - 1).isVisible()
+
+    def gutter_clicked(self, y: float) -> None:
+        block = self.firstVisibleBlock()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        while block.isValid():
+            bottom = top + self.blockBoundingRect(block).height()
+            if block.isVisible() and top <= y < bottom:
+                self.toggle_fold(block.blockNumber() + 1)
+                return
+            block = block.next()
+            top = bottom
+
+    def set_warning_lines(self, lines: set[int]) -> None:
+        self._warning_lines = set(lines)
+        self.gutter.update()
+
+    def go_to_line(self, line: int) -> None:
+        block = self.document().findBlockByNumber(line - 1)
+        if block.isValid():
+            if not block.isVisible():
+                self.unfold_all()
+            self.setTextCursor(QTextCursor(block))
+            self.centerCursor()
+            self.setFocus()
 
     # -- error marker / completion / indentation --------------------------------------
 
@@ -211,7 +297,7 @@ class CodeEditor(QPlainTextEdit):
 
     def gutter_width(self) -> int:
         digits = max(3, len(str(self.blockCount())))
-        return 16 + self.fontMetrics().horizontalAdvance("9") * digits
+        return 30 + self.fontMetrics().horizontalAdvance("9") * digits
 
     def _on_update(self, rect, dy) -> None:
         if dy:
@@ -235,10 +321,16 @@ class CodeEditor(QPlainTextEdit):
             bottom = top + round(self.blockBoundingRect(block).height())
             if block.isVisible() and bottom >= event.rect().top():
                 n = block.blockNumber()
+                h = self.fontMetrics().height()
+                if n + 1 in self._warning_lines or n + 1 == self._error_line:
+                    painter.fillRect(0, top, 4, h, QColor("#d9534f" if n + 1 == self._error_line else "#e0a526"))
                 painter.setPen(QColor("#e6ebf1" if dark else "#1c2430") if n == current
                                else QColor("#5b6675" if dark else "#9aa4b1"))
-                painter.drawText(0, top, self.gutter.width() - 8, self.fontMetrics().height(),
-                                 Qt.AlignRight, str(n + 1))
+                painter.drawText(0, top, self.gutter.width() - 20, h, Qt.AlignRight, str(n + 1))
+                if n + 1 in self._regions:
+                    painter.setPen(QColor("#97a3b2" if dark else "#5f6b7a"))
+                    painter.drawText(self.gutter.width() - 16, top, 14, h, Qt.AlignCenter,
+                                     "▸" if n + 1 in self._folded else "▾")
             block = block.next()
             top = bottom
 

@@ -89,3 +89,152 @@ def next_indent(line: str, unit: str = "  ") -> str:
     if code.startswith("--"):
         return current
     return current + unit if _OPENERS.search(code) and not re.search(r"\bend\s*$", code) else current
+
+
+# ---------------------------------------------------------------------------- lexer
+
+_TOKEN_RE = re.compile(
+    r"""(?P<comment>--\[(?P<ceq>=*)\[.*?\](?P=ceq)\]|--[^\n]*)"""
+    r"""|(?P<long>\[(?P<leq>=*)\[.*?\](?P=leq)\])"""
+    r"""|(?P<str>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"""
+    r"""|(?P<name>[A-Za-z_]\w*)""", re.S)
+_OPEN_KW = {"function", "do", "then", "repeat"}  # 'if'/'while'/'for' open via then/do
+_CLOSE_KW = {"end", "until"}
+
+
+def _code_tokens(source: str):
+    """(name, start offset) of identifiers/keywords outside strings and comments."""
+    for m in _TOKEN_RE.finditer(source):
+        if m.lastgroup == "name":
+            yield m.group("name"), m.start()
+
+
+def _line_of(source: str, offset: int) -> int:
+    return source.count("\n", 0, offset) + 1
+
+
+def _block_events(source: str):
+    """('open'|'close'|'mid', name, offset): block structure, with 'elseif ... then' as one middle part."""
+    after_elseif = False
+    for name, pos in _code_tokens(source):
+        if name == "elseif":
+            after_elseif = True
+            yield "mid", name, pos
+        elif name == "then" and after_elseif:
+            after_elseif = False
+        elif name == "else":
+            yield "mid", name, pos
+        elif name in _OPEN_KW:
+            yield "open", name, pos
+        elif name in _CLOSE_KW:
+            yield "close", name, pos
+
+
+def block_regions(source: str) -> list[tuple[int, int]]:
+    """(first line, last line) of every multi-line block (function/do/then/repeat ... end/until), 1-based."""
+    stack, regions = [], []
+    for kind, _name, pos in _block_events(source):
+        if kind == "open":
+            stack.append(_line_of(source, pos))
+        elif kind == "close" and stack:
+            start, end = stack.pop(), _line_of(source, pos)
+            if end > start:
+                regions.append((start, end))
+    return sorted(regions)
+
+
+_FUNC_RE = re.compile(r"^[ \t]*(?:local[ \t]+)?function[ \t]+([\w.:]+)|^[ \t]*(?:local[ \t]+)?([\w.:]+)[ \t]*=[ \t]*function\b",
+                      re.M)
+
+
+def functions(source: str) -> list[tuple[str, int]]:
+    """(name, line) of named function definitions, for navigation."""
+    out = []
+    for m in _FUNC_RE.finditer(source):
+        out.append((m.group(1) or m.group(2), _line_of(source, m.start())))
+    return out
+
+
+# TI-Nspire Lua API Reference Guide, "Unimplemented libraries and functions".
+UNAVAILABLE_LIBS = ("io", "os", "debug", "file")
+UNAVAILABLE_FUNCS = ("dofile", "loadfile", "module")
+
+
+def ti_warnings(source: str) -> list[tuple[int, str]]:
+    """(line, message) for standard Lua APIs that TI-Nspire does not provide."""
+    out = []
+    for name, pos in _code_tokens(source):
+        after = source[pos + len(name):pos + len(name) + 1]
+        if (name in UNAVAILABLE_LIBS and after in (".", ":")) or name in UNAVAILABLE_FUNCS:
+            out.append((_line_of(source, pos), f"«{name}» no está disponible en TI-Nspire"))
+    return out
+
+
+# ---------------------------------------------------------------------------- format
+
+def _depth_changes(line: str) -> tuple[int, int]:
+    """(levels to dedent this line, net depth change after it) for one line of code."""
+    depth = lowest = 0
+    for kind, _name, _pos in _block_events(line):
+        if kind == "open":
+            depth += 1
+        elif kind == "close":
+            depth -= 1
+        else:  # else / elseif: this part sits one level out
+            depth -= 1
+            lowest = min(lowest, depth)
+            depth += 1
+            continue
+        lowest = min(lowest, depth)
+    return -lowest, depth
+
+
+def format_lua(source: str, unit: str = "  ") -> str:
+    """Re-indent code lines by block depth; lines inside long comments/strings are kept as they are."""
+    protected = set()
+    for m in _TOKEN_RE.finditer(source):
+        if m.lastgroup == "long" or (m.lastgroup == "comment" and m.group("comment").startswith("--[")):
+            protected.update(range(_line_of(source, m.start()) + 1, _line_of(source, m.end()) + 1))
+    depth, out = 0, []
+    for no, line in enumerate(source.split("\n"), 1):
+        if no in protected:
+            out.append(line)
+            continue
+        code = line.strip()
+        dedent, change = _depth_changes(code)
+        out.append(unit * max(0, depth - dedent) + code if code else "")
+        depth = max(0, depth + change)
+    return "\n".join(out)
+
+
+def bytecode(source: str, luac: str | None = None) -> bytes | None:
+    """Stripped Lua 5.1 bytecode (no line info), or None if luac5.1 is missing or the code is invalid."""
+    luac = luac or find_luac()
+    if not luac:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        src, out = os.path.join(d, "s.lua"), os.path.join(d, "s.luac")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(source)
+        if subprocess.run([luac, "-s", "-o", out, src], capture_output=True, timeout=30).returncode:
+            return None
+        with open(out, "rb") as f:
+            return f.read()
+
+
+class FormatError(ValueError):
+    pass
+
+
+def safe_format(source: str, luac: str | None = None) -> str:
+    """Formatted source, accepted only if luac5.1 compiles both to identical stripped bytecode."""
+    luac = luac or find_luac()
+    if not luac:
+        raise FormatError("luac5.1 no está instalado: no se puede garantizar que el formato no cambie el código")
+    before = bytecode(source, luac)
+    if before is None:
+        raise FormatError("el script tiene errores de sintaxis; corrígelos antes de formatear")
+    formatted = format_lua(source)
+    if bytecode(formatted, luac) != before:
+        raise FormatError("el formato cambiaría el código compilado; no se aplica")
+    return formatted
