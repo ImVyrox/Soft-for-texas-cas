@@ -328,6 +328,18 @@ def decode(data: bytes, max_output: int = MAX_OUTPUT) -> bytes:  # noqa: C901 (s
                         raise TixcError("empty tag before attribute separator")
                     out.add(b" ")
                     state = 4
+                elif b == ord("/") and not had and out.buf.endswith(b"<"):
+                    # Literal closing tag "</name>": used once the 256-entry tag dictionary
+                    # is full (seen in documents saved by a CX CAS; Luna does the same).
+                    gt = data.find(b">", pos + 1)
+                    if gt < 0:
+                        raise TixcError("unterminated literal closing tag")
+                    name = data[pos + 1:gt]
+                    _validate_name(name, "tag")
+                    out.add(b"/" + name + b">")
+                    close(name)
+                    pos = gt
+                    state = 3
                 elif b == ord("/"):
                     out.add(b"/")
                     state = 9 if had else 10
@@ -634,6 +646,7 @@ def encode(xml: bytes) -> bytes:
     body = xml[decl_end + 2:]
     out = bytearray(b"TIXC0100-" + version + b"?>")
     tag_index: dict[bytes, int] = {}
+    open_literal: list[bytes] = []  # literal (non-dictionary) elements still open
     pos = 0
     while pos < len(body):
         if body.startswith(CDATA_OPEN, pos):
@@ -655,9 +668,13 @@ def encode(xml: bytes) -> bytes:
             if end < 0:
                 raise TixcError("unterminated closing tag")
             name = body[pos + 2:end]
-            if name not in tag_index:
+            if open_literal and open_literal[-1] == name:
+                open_literal.pop()
+                out += b"</" + name + b">"  # tag outside the full dictionary: literal close
+            elif name in tag_index:
+                out += bytes([0x0E, tag_index[name]])
+            else:
                 raise TixcError(f"close tag has no dictionary entry: {name!r}")
-            out += bytes([0x0E, tag_index[name]])
             pos = end + 1
             continue
         if body.startswith(b"<?", pos) or body.startswith(b"<!", pos):
@@ -666,13 +683,15 @@ def encode(xml: bytes) -> bytes:
         name = body[pos + 1:name_end]
         if not name or len(name) > 64:
             raise TixcError(f"invalid tag name at offset {pos}")
+        literal = False
         if name in tag_index:
             out += bytes([0x0C, tag_index[name]])
             reference = True
         else:
-            if len(tag_index) >= 256:
-                raise TixcError("tag dictionary exhausted")
-            tag_index[name] = len(tag_index)
+            if len(tag_index) < 256:
+                tag_index[name] = len(tag_index)
+            else:
+                literal = True  # dictionary full: written literally, closed literally
             out += b"<" + name
             reference = False
         cursor, has_attrs = name_end, False
@@ -687,6 +706,8 @@ def encode(xml: bytes) -> bytes:
             if body[cursor] == ord(">"):
                 if not reference or has_attrs:
                     out.append(ord(">"))
+                if literal:
+                    open_literal.append(name)
                 pos = cursor + 1
                 break
             a_end = _name_end(body, cursor)

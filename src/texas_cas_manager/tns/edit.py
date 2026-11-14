@@ -40,13 +40,18 @@ def rebuild(original: bytes | None, script: str, problem: str = "Problem1.xml", 
 
 
 def apply_edits(original: bytes, scripts: dict[tuple[str, int], str] | None = None,
-                notes_edits: dict[tuple[str, int], dict[int, str]] | None = None) -> bytes:
-    """Apply script edits ((problem, index) -> source) and note edits ((problem, card) -> {run: text}).
+                notes_edits: dict[tuple[str, int], dict[int, str]] | None = None,
+                layouts: dict[tuple[str, int], list[int | str]] | None = None,
+                orders: dict[str, list[int]] | None = None) -> bytes:
+    """Apply, in this order: script edits ((problem, index) -> source), note run edits
+    ((problem, card) -> {run: text}), paragraph layouts ((problem, card) -> layout, see
+    notes.set_paragraphs) and page orders (problem -> permutation).
 
     Every edit is read back from the result, and only the problems that were
     edited may differ from the original.
     """
     from . import notes as notes_mod  # local: notes imports lua, which edit already uses
+    from . import pages as pages_mod
 
     data = original
     for (problem, index), source in sorted((scripts or {}).items()):
@@ -54,16 +59,20 @@ def apply_edits(original: bytes, scripts: dict[tuple[str, int], str] | None = No
     for (problem, card), runs in sorted((notes_edits or {}).items()):
         if runs:
             data = container.write(notes_mod.edit_notes(container.parse(data), problem, card, runs))
+            page = next(p for p in notes_mod.document_pages(container.parse(data))
+                        if (p.problem, p.card) == (problem, card))
+            if any(page.runs[i].text != text for i, text in runs.items()):
+                raise RebuildError(f"el texto editado de {problem}, página {card + 1}, no se releyó igual")
+    for (problem, card), layout in sorted((layouts or {}).items()):
+        data = container.write(notes_mod.edit_paragraphs(container.parse(data), problem, card, layout))
+    for problem, order in sorted((orders or {}).items()):
+        if order != sorted(order):
+            data = container.write(pages_mod.reorder_pages(container.parse(data), problem, order))
     problems = inspect.validate_bytes(data)
     if problems:
         raise RebuildError("; ".join(problems))
-    doc = container.parse(data)
-    pages = {(p.problem, p.card): p for p in notes_mod.document_pages(doc)} if notes_edits else {}
-    for (problem, card), runs in (notes_edits or {}).items():
-        for idx, text in runs.items():
-            if pages[(problem, card)].runs[idx].text != text:
-                raise RebuildError(f"el texto editado de {problem}, página {card + 1}, no se releyó igual")
-    allowed = {p for p, _ in (scripts or {})} | {p for p, _ in (notes_edits or {})}
+    allowed = ({p for p, _ in (scripts or {})} | {p for p, _ in (notes_edits or {})}
+               | {p for p, _ in (layouts or {})} | set(orders or {}))
     changed = {c.name for c in compare_components(original, data) if c.status != "igual"}
     if changed - allowed:
         raise RebuildError("se modificaron componentes que no debían cambiar: " + ", ".join(sorted(changed - allowed)))

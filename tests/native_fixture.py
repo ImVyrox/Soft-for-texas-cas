@@ -94,3 +94,56 @@ def notes_problem_xml(pages: list[list[str]] | None = None) -> bytes:
 def notes_document(pages: list[list[str]] | None = None) -> bytes:
     return write(TnsDocument(version="0601", entries=[encrypted_entry("Document.xml", DOCUMENT_XML),
                                                        encrypted_entry("Problem1.xml", notes_problem_xml(pages))]))
+
+
+# --- Maths boxes and other page types (structures observed in samples made on a CX CAS) ----
+
+def mbox(input_tree: str, full: str | None, err: int = 0) -> str:
+    out = (f"<full>{full}</full><warn>{{}}</warn>" if full is not None else "") + f"<err>{err}</err>"
+    return ('<node name="0el" flags="8" id0="1"><mbox><attr iomode="1" comp="2" active="true" id0="3"/>'
+            f'<out>{out}</out></mbox><node name="0el" id0="2">{input_tree}</node>'
+            '<node name="0el" id0="3"><leaf name="0text" readonly="1" np="1" id0="3" pp0="1">r</leaf></node></node>')
+
+
+def t(text: str) -> str:
+    return f'<leaf name="0text" np="1" id0="2" pp0="{len(text)}">{text}</leaf>'
+
+
+def el(*parts: str) -> str:
+    return '<node name="0el" id0="2">' + "".join(parts) + "</node>"
+
+
+MATH_SAMPLES = [
+    (t("") + '<node name="0fraction" id0="2">((' + el(t("1")) + el(t("2")) + "</node>" + t("+")
+     + '<node name="0fraction" id0="2">((' + el(t("1")) + el(t("3")) + "</node>", "5/6", "(1)/(2)+(1)/(3)"),
+    ('<node name="0sqrt" id0="4">√(' + el(t("2")) + "</node>", "√(2)", "√(2)"),
+    (t("x") + '<node name="0power" id0="6">^(' + el(t("3")) + "</node>", "x^3", "x^(3)"),
+    ('<node name="0matrix" id0="2" data="2">[[' + el(t("1")) + el(t("2")) + el(t("3")) + el(t("4")) + "</node>",
+     "[[1,2][3,4]]", "[[1,2][3,4]]"),
+    ('<node name="0integral" id0="4">∫(' + el(t("0")) + el(t("1")) + el(t("x")) + el(t("x")) + "</node>",
+     "1/2", "∫(x,x,0,1)"),
+]
+
+SCRATCHPAD = ('<wdgt xmlns:a="urn:TI.Scratchpad" type="TI.Scratchpad" ver="1.0"><a:mFlags>0</a:mFlags>'
+              '<a:erow><a:entr>2+3</a:entr><a:exct>2+3</a:exct><a:rslt><a:warn2>{}</a:warn2><a:disp>5</a:disp>'
+              '<a:full>5</a:full></a:rslt><a:ctxt ang="2" cplx="1" comp="1"/></a:erow></wdgt>')
+TABULATOR = ('<wdgt xmlns:tb="urn:TI.Tabulator" type="tabulator" ver="1.0"><tb:table><tb:rowHeights/><tb:columns>'
+             '<tb:column type="formula-column"><tb:formula>=datos</tb:formula><tb:cells><tb:cell><tb:rowId>1</tb:rowId>'
+             '</tb:cell></tb:cells></tb:column><tb:column type="cell-column"><tb:cells/></tb:column></tb:columns>'
+             '</tb:table></wdgt>')
+GEO = ('<wdgt xmlns:g="urn:TI.GeoGrapher" type="TI.GeoGrapher" ver="1.0"><g:fig><g:ver>10</g:ver><g:objs>'
+       '<g:axis><g:id>2</g:id></g:axis><g:axis><g:id>3</g:id></g:axis><g:point><g:id>4</g:id></g:point></g:objs>'
+       '</g:fig></wdgt>')
+
+
+def card(wdgt: str) -> str:
+    return ('<card clay="0" h1="10000" h2="10000" w1="10000" w2="10000"><isDummyCard>0</isDummyCard><flag>0</flag>'
+            + wdgt + "</card>")
+
+
+def multi_page_xml() -> bytes:
+    notes = notes_problem_xml([[word("hola")]]).decode()
+    notes_card = notes[notes.index("<card"):notes.rindex("</card>") + len("</card>")]
+    return DECL + ('<prob xmlns="urn:TI.Problem" ver="1.0" pbname=""><sym><e t="6" f="0" c="255"><n>f1</n><p>x</p>'
+                   '<v>x^2</v></e></sym>' + notes_card + card(SCRATCHPAD) + card(TABULATOR) + card(GEO)
+                   + "</prob>").encode()
