@@ -23,7 +23,9 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 - ✅ Descarga de documentos con progreso, también varias seguidas. El documento que está abierto en
   la calculadora no se puede descargar: hay que cerrarlo antes (ver
   [docs/USB-PROTOCOL.md](docs/USB-PROTOCOL.md)).
-- 🟡 Envío de `.tns`, crear carpetas, renombrar y borrar (con confirmación).
+- ✅ Envío de `.tns`, crear carpetas, renombrar y borrar archivos (con confirmación), probados con
+  hardware en una carpeta de pruebas ([docs/HARDWARE-TESTS.md](docs/HARDWARE-TESTS.md)). 🟡 Borrar
+  carpetas, sin probar.
 - ✅ Arrastrar y soltar entre el ordenador y la calculadora (probado en modo demo).
 - ✅ Análisis de `.tns`: versión, componentes, codificación, CRC, reescritura idéntica.
 - ✅ Extracción de componentes legibles (imágenes, script Lua).
@@ -73,6 +75,7 @@ Dependencias de Python: `PySide6` y `pycryptodome` (para el cifrado 3DES de los 
 - [libnspire, TiLP y alternativas](docs/LIBNSPIRE.md)
 - [Formato .tns](docs/TNS-FORMAT.md)
 - [Desarrollo y pruebas](docs/DEVELOPMENT.md)
+- [Pruebas con hardware real](docs/HARDWARE-TESTS.md)
 
 ## Licencia
 

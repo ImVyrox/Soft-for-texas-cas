@@ -704,7 +704,7 @@ static int cmd_get(const char *remote, const char *local)
 	return 0;
 }
 
-/* Untested with hardware (no writes to the calculator were allowed yet). */
+/* Tested with hardware in /TCM_TESTS on 2026-11-13 (docs/HARDWARE-TESTS.md). */
 static int cmd_put(const char *local, const char *remote)
 {
 	gchar *data = NULL;
@@ -753,7 +753,8 @@ static int cmd_put(const char *local, const char *remote)
 	return 0;
 }
 
-/* Delete file, create/delete folder and rename: one command + status (untested with hardware). */
+/* Delete file, create/delete folder and rename: one command + status.
+ * del, mkdir and rename tested with hardware (docs/HARDWARE-TESTS.md); rmdir not yet. */
 static int simple_fm(const char *what, const char *a, const char *b2)
 {
 	GByteArray *b = g_byte_array_new();

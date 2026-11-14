@@ -13,10 +13,11 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 | Descargar archivos (también seguidas) | ✅ |
 | Información sin bloquear el servicio de archivos | ✅ (canal propio por servicio) |
 | Descargar el documento abierto en la calculadora | 🔍 la calculadora no responde; se informa con un error claro |
-| Enviar archivos `.tns` | 🟡 |
-| Borrar archivos / carpetas vacías | 🟡 (con confirmación) |
-| Crear carpetas, renombrar | 🟡 |
-| Arrastrar y soltar (ordenador ↔ calculadora, gestor de archivos → calculadora) | ✅ en modo demo / 🟡 con hardware |
+| Enviar archivos `.tns` | ✅ (SHA-256 verificado en `/TCM_TESTS`) |
+| Borrar archivos | ✅ (con confirmación) |
+| Borrar carpetas vacías | 🟡 |
+| Crear carpetas, renombrar | ✅ |
+| Arrastrar y soltar (ordenador ↔ calculadora, gestor de archivos → calculadora) | ✅ en modo demo; las operaciones de debajo, con hardware |
 | Progreso de transferencias | ✅ |
 | Captura de pantalla de la calculadora | ⬜ (libticalcs la ofrece: `ticalcs_calc_recv_screen`) |
 | Backend libnspire / CX II | ⬜ |
@@ -49,7 +50,7 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 
 ## Próximos pasos
 
-1. Probar envío, borrado y carpetas con hardware en una carpeta de pruebas (requiere autorización).
+1. Probar `rmdir` con hardware (requiere autorización).
 2. Investigar si la calculadora puede entregar el documento que tiene abierto.
 3. Comprobar en la calculadora un documento Lua generado por el programa.
 4. Buscar documentación sobre la derivación de claves de las cabeceras cifradas.

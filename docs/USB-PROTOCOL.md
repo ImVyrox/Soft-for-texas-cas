@@ -124,8 +124,9 @@ Petición: `id\tcomando\targ…\n`. Respuesta: una línea JSON con el mismo `id`
 | `info` | modelo, OS, flash libre/total, RAM, batería | sí |
 | `list ruta` | contenido de una carpeta | sí |
 | `get remota local` | descarga (escritura atómica `.part` + rename) | sí |
-| `put local remota` | envío | **no** (no se permitieron escrituras) |
-| `del`, `mkdir`, `rmdir`, `rename` | gestión | **no** (no se permitieron escrituras) |
+| `put local remota` | envío | sí, en `/TCM_TESTS` (SHA-256 verificado) |
+| `del`, `mkdir`, `rename` | gestión | sí, en `/TCM_TESTS` ([HARDWARE-TESTS.md](HARDWARE-TESTS.md)) |
+| `rmdir` | borrar carpeta vacía | **no** (no autorizado) |
 | `listen segundos` | diagnóstico: muestra y atiende lo que la calculadora envía sola | sí |
 
 Códigos de error: `4` sin respuesta del cable, `9007` petición confirmada sin respuesta (ocupada),
@@ -140,5 +141,6 @@ o más, errores locales del helper.
 
 ## Pendiente
 
-- Probar `put`, `del`, `mkdir`, `rmdir` y `rename` con hardware, en una carpeta de pruebas y con
-  autorización. Usan la misma capa de canales, pero no se han ejecutado nunca contra la calculadora.
+- `rmdir` sin probar con hardware.
+- `/NspireLogs.zip` (archivo del sistema) tampoco se entrega: igual que el documento abierto, la
+  petición se confirma pero no se responde.
