@@ -69,3 +69,23 @@ def test_all_pages_render(window, qapp_wait):
         window.nav.setCurrentRow(row)
         qapp_wait(lambda: False, 50)
         assert window.stack.currentIndex() == row
+
+
+def test_busy_listing_is_retried_and_reported(window, qapp_wait):
+    from texas_cas_manager.core.link import ERR_BUSY, LinkError
+    assert qapp_wait(lambda: window.service.connected)
+    link = window.service.link
+    real_list = link.list
+    calls = {"n": 0}
+
+    def flaky_list(folder):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LinkError("ocupada", ERR_BUSY)
+        return real_list(folder)
+
+    link.list = flaky_list
+    window.calc.BUSY_DELAY_S = 0  # instance override: retry immediately in the test
+    window.calc.refresh()
+    assert qapp_wait(lambda: calls["n"] >= 2 and window.calc._busy_attempts == 0)
+    assert window.calc.remote.topLevelItemCount() == 2

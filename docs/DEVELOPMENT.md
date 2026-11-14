@@ -42,7 +42,11 @@ printf '1\tprobe\n2\topen\n3\tinfo\n4\tlist\t/\n5\tquit\n' | native/tcm-link/tcm
 ```
 
 Para ver el tráfico de paquetes: `env G_MESSAGES_DEBUG=all native/tcm-link/tcm-link` (los registros
-van a stderr).
+van a stderr). Desde la aplicación: `env TCM_DEBUG=1 ./scripts/run.sh` y mirar
+`~/.local/state/texas-cas-manager/tcm-link.log`.
+
+Las pruebas usan directorios XDG temporales (`tests/conftest.py`): nunca escriben en tu
+`~/.config` ni en tu `~/.local/state`.
 
 ## Reglas
 

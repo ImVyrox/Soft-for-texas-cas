@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
                                QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 
 from ... import __version__
-from ...config import LOG_DIR, atomic_write, unique_path
+from ...config import atomic_write, log_dir, unique_path
 from ...core.link import find_helper
 from ...tns.inspect import validate_bytes
 from ...tns.lua import build_lua_document
@@ -145,7 +145,7 @@ class SettingsPage(QWidget):
         about.body.addWidget(label(
             f"Texas CAS Manager {__version__}<br>Programa auxiliar USB: "
             f"{helper or '<b>no compilado</b> (ejecuta scripts/build-helper.sh)'}<br>"
-            f"Registro: {LOG_DIR / 'app.log'}<br>"
+            f"Registros: {log_dir()}<br>"
             "Comunicación USB mediante libticalcs2 (TiLP). Formato de documentos Lua compatible con Luna 2.1.",
             "muted", wrap=True))
         root.addWidget(about)

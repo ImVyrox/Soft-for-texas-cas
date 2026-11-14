@@ -10,8 +10,9 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 | Detección automática (USB `0451:e012`) | ✅ |
 | Conexión e información (modelo, OS, almacenamiento, RAM, batería) | ✅ |
 | Listado de carpetas con nombres reales | ✅ |
-| Descargar un archivo | ✅ (la primera descarga de cada sesión) |
-| Descargas seguidas | 🧪 la calculadora deja de responder tras una descarga; hay reintento y resync (ver USB-PROTOCOL.md) |
+| Descargar archivos (también seguidas) | ✅ |
+| Información sin bloquear el servicio de archivos | ✅ (canal propio por servicio) |
+| Descargar el documento abierto en la calculadora | 🔍 la calculadora no responde; se informa con un error claro |
 | Enviar archivos `.tns` | 🟡 |
 | Borrar archivos / carpetas vacías | 🟡 (con confirmación) |
 | Crear carpetas, renombrar | 🟡 |
@@ -48,7 +49,7 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 
 ## Próximos pasos
 
-1. Confirmar qué muestra la calculadora tras una descarga y resolver el bloqueo.
-2. Probar envío, borrado y carpetas con hardware en una carpeta de pruebas.
+1. Probar envío, borrado y carpetas con hardware en una carpeta de pruebas (requiere autorización).
+2. Investigar si la calculadora puede entregar el documento que tiene abierto.
 3. Comprobar en la calculadora un documento Lua generado por el programa.
 4. Buscar documentación sobre la derivación de claves de las cabeceras cifradas.

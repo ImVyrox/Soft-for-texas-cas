@@ -4,10 +4,9 @@ The helper (native/tcm-link) wraps libticalcs2. Every method here blocks, so
 the GUI calls them from worker threads (see ui/workers.py). A lock serialises
 requests because the calculator handles one operation at a time.
 
-Device quirk handled here (CX CAS, OS 4.5.5, see docs/USB-PROTOCOL.md): after
-a download the calculator ignores file requests for some seconds. The helper
-resets the link after each download; this class retries file operations that
-time out right after a download.
+The calculator-side quirks (persistent file session, packets sent by the
+calculator after a transfer) are handled inside the helper; see
+docs/USB-PROTOCOL.md.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ import posixpath
 import shutil
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -26,9 +24,34 @@ from typing import Callable, Protocol
 ProgressFn = Callable[[int, int], None]
 
 TI_VENDOR_PIDS = {0xE012: "TI-Nspire (CX)", 0xE022: "TI-Nspire CX II"}
-ERR_TIMEOUT = 4  # libticables "timeout occurred while reading from the device"
-ERR_NOT_FOUND = 404  # libticalcs: "the variable or directory does not exist"
+ERR_TIMEOUT = 4  # libticables: no packet at all (cable, power, or the request was not acknowledged)
+ERR_CALC_STATUS = 1000  # tcm-link: calculator status reply "FF xx" -> 1000 + xx
+ERR_NOT_FOUND = ERR_CALC_STATUS + 0x0A
+ERR_BUSY = 9007  # tcm-link: request acknowledged but never answered (file service busy)
 ERR_HELPER = -1
+
+# Calculator status bytes documented on Hackspire (USB Protocol, file management).
+CALC_STATUS_TEXT = {
+    0x09: "la carpeta de destino no existe",
+    0x0A: "el archivo o la carpeta no existe",
+    0x0F: "nombre de carpeta no válido",
+    0x14: "nombre de archivo no válido",
+    0x15: "los documentos deben tener extensión .tns",
+}
+
+
+def describe_error(code: int, raw: str) -> str:
+    """Spanish explanation for a helper error, keeping the original text."""
+    if code == ERR_BUSY:
+        return ("La calculadora recibió la petición pero no respondió: su servicio de archivos está "
+                "ocupado. Pasa, por ejemplo, al pedir el documento que tiene abierto; suele "
+                "recuperarse sola en alrededor de un minuto.")
+    if code == ERR_TIMEOUT:
+        return ("La calculadora no contesta. Comprueba el cable y que esté encendida.\n" + raw)
+    if ERR_CALC_STATUS <= code < ERR_CALC_STATUS + 256:
+        status = code - ERR_CALC_STATUS
+        return f"La calculadora rechazó la operación: {CALC_STATUS_TEXT.get(status, f'código 0x{status:02X}')}."
+    return raw
 
 
 class LinkError(Exception):
@@ -112,14 +135,13 @@ def find_helper() -> str | None:
 class HelperLink:
     """Link through the ``tcm-link`` helper process."""
 
-    def __init__(self, helper: str | None = None, busy_retry_seconds: float = 60.0):
+    def __init__(self, helper: str | None = None, log_path: Path | None = None):
         self._helper = helper or find_helper()
+        self.log_path = log_path  # helper stderr (libticalcs messages); None = discard
         self._proc: subprocess.Popen | None = None
         self._lock = threading.RLock()
         self._next_id = 0
         self._open = False
-        self._after_download = False
-        self.busy_retry_seconds = busy_retry_seconds
 
     # -- process / protocol -------------------------------------------------
 
@@ -129,9 +151,20 @@ class HelperLink:
         if not self._helper:
             raise LinkError("no se encontró el programa auxiliar tcm-link (ejecuta scripts/build-helper.sh)")
         self._open = False
-        self._proc = subprocess.Popen(
-            [self._helper], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+        env = dict(os.environ)
+        if os.environ.get("TCM_DEBUG"):
+            env["G_MESSAGES_DEBUG"] = "all"  # libticalcs logs every USB packet
+        log = None
+        if self.log_path:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = open(self.log_path, "a", encoding="utf-8")
+        try:
+            self._proc = subprocess.Popen(
+                [self._helper], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env)
+        finally:
+            if log:
+                log.close()  # the child keeps its own descriptor
         return self._proc
 
     def _request(self, *args: str, progress: ProgressFn | None = None) -> dict:
@@ -164,21 +197,9 @@ class HelperLink:
                         progress(int(msg["done"]), int(msg["total"]))
                     continue
                 if not msg.get("ok"):
-                    raise LinkError(msg.get("error", "error desconocido").strip(), int(msg.get("code", ERR_HELPER)))
+                    code = int(msg.get("code", ERR_HELPER))
+                    raise LinkError(describe_error(code, msg.get("error", "error desconocido").strip()), code)
                 return msg
-
-    def _file_op(self, *args: str, progress: ProgressFn | None = None) -> dict:
-        """File request with the post-download retry (see module docstring)."""
-        deadline = time.monotonic() + self.busy_retry_seconds
-        while True:
-            try:
-                reply = self._request(*args, progress=progress)
-                self._after_download = False
-                return reply
-            except LinkError as exc:
-                if not (self._after_download and exc.code == ERR_TIMEOUT and time.monotonic() < deadline):
-                    raise
-                self._request("resync")
 
     # -- Link API -------------------------------------------------------------
 
@@ -192,7 +213,6 @@ class HelperLink:
     def open(self) -> None:
         self._request("open")
         self._open = True
-        self._after_download = False
 
     def close(self) -> None:
         with self._lock:
@@ -213,29 +233,28 @@ class HelperLink:
 
     def list(self, folder: str) -> list[RemoteEntry]:
         folder = check_remote_path(folder)
-        reply = self._file_op("list", folder)
+        reply = self._request("list", folder)
         return [RemoteEntry(posixpath.join(folder, it["name"]), int(it["size"]), int(it["type"]) == 1)
                 for it in reply["items"]]
 
     def get(self, remote: str, local: Path, progress: ProgressFn | None = None) -> int:
-        reply = self._file_op("get", check_remote_path(remote), str(local), progress=progress)
-        self._after_download = True
+        reply = self._request("get", check_remote_path(remote), str(local), progress=progress)
         return int(reply["size"])
 
     def put(self, local: Path, remote: str, progress: ProgressFn | None = None) -> int:
-        return int(self._file_op("put", str(local), check_remote_path(remote), progress=progress)["size"])
+        return int(self._request("put", str(local), check_remote_path(remote), progress=progress)["size"])
 
     def delete(self, remote: str) -> None:
-        self._file_op("del", check_remote_path(remote))
+        self._request("del", check_remote_path(remote))
 
     def mkdir(self, remote: str) -> None:
-        self._file_op("mkdir", check_remote_path(remote))
+        self._request("mkdir", check_remote_path(remote))
 
     def rmdir(self, remote: str) -> None:
-        self._file_op("rmdir", check_remote_path(remote))
+        self._request("rmdir", check_remote_path(remote))
 
     def rename(self, src: str, dst: str) -> None:
-        self._file_op("rename", check_remote_path(src), check_remote_path(dst))
+        self._request("rename", check_remote_path(src), check_remote_path(dst))
 
 
 class MockLink:

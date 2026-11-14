@@ -20,8 +20,9 @@ Leyenda: ✅ implementado y probado · 🟡 implementado, sin probar con hardwar
 
 - ✅ Detección automática, modelo, versión del sistema, almacenamiento libre, RAM y batería.
 - ✅ Explorador de archivos de la calculadora (nombres reales, tamaños, búsqueda, orden).
-- ✅ Descarga de documentos con progreso. 🧪 Tras una descarga, la calculadora tarda en volver a
-  responder (ver [docs/USB-PROTOCOL.md](docs/USB-PROTOCOL.md)).
+- ✅ Descarga de documentos con progreso, también varias seguidas. El documento que está abierto en
+  la calculadora no se puede descargar: hay que cerrarlo antes (ver
+  [docs/USB-PROTOCOL.md](docs/USB-PROTOCOL.md)).
 - 🟡 Envío de `.tns`, crear carpetas, renombrar y borrar (con confirmación).
 - ✅ Arrastrar y soltar entre el ordenador y la calculadora (probado en modo demo).
 - ✅ Análisis de `.tns`: versión, componentes, codificación, CRC, reescritura idéntica.
@@ -60,7 +61,9 @@ Dependencias de Python: `PySide6` y `pycryptodome` (para el cifrado 3DES de los 
 2. La aplicación la detecta sola (indicador arriba a la derecha).
 3. **Calculadora**: arrastra `.tns` del panel izquierdo al derecho para enviarlos, o al revés para
    descargarlos.
-4. **Editor .tns**: abre un documento, edita el script Lua, pulsa *Validar* o *Comparar* y luego
+4. Si un documento no se descarga y aparece «ocupada», ciérralo en la calculadora: no entrega el
+   documento que tiene abierto.
+5. **Editor .tns**: abre un documento, edita el script Lua, pulsa *Validar* o *Comparar* y luego
    *Guardar como nueva versión*.
 
 ## Documentación

@@ -11,8 +11,20 @@ from pathlib import Path
 
 APP_NAME = "Texas CAS Manager"
 APP_ID = "texas-cas-manager"
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_ID
-LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / APP_ID
+
+
+def config_dir() -> Path:
+    """Resolved on each call so XDG_CONFIG_HOME set later (e.g. by tests) is honoured."""
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / APP_ID
+
+
+def log_dir() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / APP_ID
+
+
+def default_workspace() -> str:
+    return str(Path.home() / "Documentos" / "TI-Nspire")
+
 MAX_RECENT = 10
 
 log = logging.getLogger(APP_ID)
@@ -21,14 +33,14 @@ log = logging.getLogger(APP_ID)
 @dataclass
 class Settings:
     theme: str = "system"  # system | light | dark
-    workspace: str = str(Path.home() / "Documentos" / "TI-Nspire")
+    workspace: str = field(default_factory=default_workspace)
     demo_mode: bool = False  # simulated calculator, no USB
     auto_connect: bool = True
     recent: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
-        path = path or CONFIG_DIR / "settings.json"
+        path = path or config_dir() / "settings.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -37,7 +49,7 @@ class Settings:
         return cls(**known)
 
     def save(self, path: Path | None = None) -> None:
-        path = path or CONFIG_DIR / "settings.json"
+        path = path or config_dir() / "settings.json"
         atomic_write(path, json.dumps(asdict(self), indent=2, ensure_ascii=False).encode("utf-8"), overwrite=True)
 
     def add_recent(self, file: str) -> None:
@@ -80,8 +92,9 @@ def unique_path(path: Path) -> Path:
 
 
 def setup_logging() -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logfile = LOG_DIR / "app.log"
+    logdir = log_dir()
+    logdir.mkdir(parents=True, exist_ok=True)
+    logfile = logdir / "app.log"
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[logging.FileHandler(logfile, encoding="utf-8"), logging.StreamHandler()],

@@ -8,13 +8,12 @@ import textwrap
 import pytest
 
 from texas_cas_manager.config import Settings, atomic_write, unique_path
-from texas_cas_manager.core.link import (ERR_TIMEOUT, HelperLink, LinkError, MockLink, check_remote_path,
+from texas_cas_manager.core.link import (ERR_BUSY, ERR_NOT_FOUND, ERR_TIMEOUT, HelperLink, LinkError, MockLink, check_remote_path,
                                          join)
 
 FAKE = textwrap.dedent('''
     import json, sys
     files = {"/a.tns": b"AAAA", "/dir/b.tns": b"BB"}
-    after_get = 0
     def out(o): print(json.dumps(o), flush=True)
     for line in sys.stdin:
         rid, cmd, *args = line.rstrip("\\n").split("\\t")
@@ -23,18 +22,18 @@ FAKE = textwrap.dedent('''
         if cmd in ("open", "resync", "close"): out({"id": rid, "ok": True}); continue
         if cmd == "info": out({"id": rid, "ok": True, "product_name": "TI-Nspire CX CAS", "os_version": "4.55.0079",
                                "flash_free": 10, "flash_total": 20, "ram_free": 1, "ram_total": 2, "battery_ok": True}); continue
-        if after_get:  # simulate the post-download busy period: first request times out
-            after_get -= 1
-            out({"id": rid, "ok": False, "code": 4, "error": "timeout"}); continue
+        if cmd == "list" and args[0] == "/slow":
+            sys.stderr.write("libticalcs: timeout" + chr(10)); sys.stderr.flush()
+            out({"id": rid, "ok": False, "code": 9007, "error": "the calculator acknowledged the request but did not answer"}); continue
         if cmd == "list":
             items = [{"name": "a.tns", "size": 4, "type": 0}, {"name": "dir", "size": 0, "type": 1}] if args[0] == "/" else []
             out({"id": rid, "ok": True, "items": items}); continue
         if cmd == "get":
-            if args[0] not in files: out({"id": rid, "ok": False, "code": 404, "error": "Msg: does not exist"}); continue
+            if args[0] not in files: out({"id": rid, "ok": False, "code": 1010, "error": "the file or folder does not exist"}); continue
             out({"id": rid, "event": "progress", "done": 2, "total": 4})
             open(args[1], "wb").write(files[args[0]])
             out({"id": rid, "event": "progress", "done": 4, "total": 4})
-            out({"id": rid, "ok": True, "size": len(files[args[0]])}); after_get = 1; continue
+            out({"id": rid, "ok": True, "size": len(files[args[0]])}); continue
         out({"id": rid, "ok": False, "code": 9001, "error": "unknown command"})
 ''')
 
@@ -44,7 +43,7 @@ def fake_helper(tmp_path):
     p = tmp_path / "fake-helper"
     p.write_text(f"#!{sys.executable}\n" + FAKE)
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    link = HelperLink(str(p), busy_retry_seconds=5)
+    link = HelperLink(str(p), log_path=tmp_path / "helper.log")
     yield link
     link.close()
 
@@ -61,16 +60,20 @@ def test_helper_link_list_get_progress_and_errors(fake_helper, tmp_path):
     assert link.get("/a.tns", tmp_path / "a.tns", lambda d, t: seen.append((d, t))) == 4
     assert (tmp_path / "a.tns").read_bytes() == b"AAAA"
     assert seen == [(2, 4), (4, 4)]
-    # The fake times out once after a download: the client resyncs and retries.
+    # Consecutive operations after a download keep working (one helper session).
     assert [e.name for e in link.list("/")] == ["a.tns", "dir"]
     with pytest.raises(LinkError) as exc:
+        link.list("/slow")
+    assert exc.value.code == ERR_BUSY and "ocupado" in str(exc.value)
+    with pytest.raises(LinkError) as exc:
         link.get("/nope.tns", tmp_path / "x.tns")
-    assert exc.value.code == 404
+    assert exc.value.code == ERR_NOT_FOUND and "no existe" in str(exc.value)
     link.close()
     assert not link.is_open
+    assert "libticalcs: timeout" in (tmp_path / "helper.log").read_text()
 
 
-def test_timeout_is_not_retried_without_a_previous_download(tmp_path):
+def test_timeout_is_reported_not_retried(tmp_path):
     p = tmp_path / "slow"
     p.write_text(f"#!{sys.executable}\nimport json,sys\n"
                  "for l in sys.stdin:\n rid=l.split('\\t')[0]\n"

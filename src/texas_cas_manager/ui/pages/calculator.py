@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFileSystemModel,
                                QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...config import unique_path
-from ...core.link import RemoteEntry, join
+from PySide6.QtCore import QTimer
+
+from ...core.link import ERR_BUSY, RemoteEntry, join
 from ..widgets.common import Card, confirm, human_size, icon, label
 
 REMOTE_MIME = "application/x-tcm-remote-paths"
@@ -196,6 +198,12 @@ class CalculatorPage(QWidget):
         tbar.addWidget(self.progress)
         root.addLayout(tbar)
 
+        # Automatic retry while the calculator reports "busy" (ERR_BUSY): the request was
+        # acknowledged but not answered. Bounded and shown in the status line.
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._retry_busy)
+        self._busy_attempts = 0
         self.set_local_root(settings.workspace)
         self.service.state.connect(self._on_state)
         self._on_state("disconnected")
@@ -234,6 +242,8 @@ class CalculatorPage(QWidget):
         if state == "connected" and self.remote.topLevelItemCount() == 0:
             self.refresh()
         if state == "disconnected":
+            self._retry_timer.stop()
+            self._busy_attempts = 0
             self.remote.clear()
             self.remote_hint.setText("Calculadora no conectada.")
         elif on:
@@ -297,10 +307,35 @@ class CalculatorPage(QWidget):
             self._filter(self.search.text())
             self.status.setText(f"{folder}: {len(entries)} elementos")
 
+        def failed(err):
+            if getattr(err, "code", None) == ERR_BUSY and folder == "/" and self._busy_attempts < self.BUSY_RETRIES:
+                self._busy_attempts += 1
+                self.status.setText(f"Calculadora ocupada: nuevo intento en {self.BUSY_DELAY_S} s "
+                                    f"({self._busy_attempts}/{self.BUSY_RETRIES}). Pulsa Actualizar para reintentar ya.")
+                self._retry_timer.start(self.BUSY_DELAY_S * 1000)
+            else:
+                self.status.setText(f"No se pudo leer {folder}")
+            self.service.message.emit("error", str(err))
+
         self.status.setText(f"Leyendo {folder}…")
-        self.service.submit(lambda p: self.service.link.list(folder), done)
+        self.service.submit(lambda p: self.service.link.list(folder), self._listed(done), failed)
+
+    BUSY_RETRIES = 4
+    BUSY_DELAY_S = 20  # the busy state lasted 45-60 s in tests on OS 4.5.5
+
+    def _listed(self, done):
+        def wrapper(entries):
+            self._busy_attempts = 0
+            done(entries)
+        return wrapper
+
+    def _retry_busy(self) -> None:
+        if self.service.connected:
+            self.load_folder("/")
 
     def refresh(self) -> None:
+        self._retry_timer.stop()
+        self._busy_attempts = 0
         expanded = [it.data(0, PATH_ROLE) for it in self._all_items() if it.isExpanded()]
         self.load_folder("/")
         for path in expanded:

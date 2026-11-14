@@ -13,9 +13,21 @@ from ..core.link import ERR_NOT_FOUND, DeviceInfo, HelperLink, Link, LinkError, 
 log = logging.getLogger(__name__)
 
 
+class TaskError(str):
+    """Error text passed to ``on_fail``; ``code`` is the LinkError code if any."""
+
+    code: int | None = None
+
+
+def _task_error(exc: Exception) -> TaskError:
+    err = TaskError(str(exc))
+    err.code = getattr(exc, "code", None)
+    return err
+
+
 class _Signals(QObject):
     done = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)  # TaskError
     progress = Signal(int, int)
 
 
@@ -33,7 +45,7 @@ class Task(QRunnable):
         except Exception as exc:  # reported to the GUI, not swallowed
             if not isinstance(exc, (LinkError, OSError, ValueError)):
                 log.error("tarea fallida\n%s", traceback.format_exc())
-            self.signals.failed.emit(str(exc))
+            self.signals.failed.emit(_task_error(exc))
         else:
             self.signals.done.emit(result)
 
@@ -89,7 +101,8 @@ class LinkService(QObject):
         if demo:
             from ..core.demo import demo_link
             return demo_link()
-        return HelperLink()
+        from ..config import log_dir
+        return HelperLink(log_path=log_dir() / "tcm-link.log")
 
     @property
     def connected(self) -> bool:
